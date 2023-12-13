@@ -13,7 +13,7 @@ As this file defines the thing we are proving, it is the one thing that is not f
 This is a weakness in this proof — if I've misstated the behavior of the Atari, the proof doesn't prove what I think it does.
 But I would expect such an error to cause a big enough impact to completely mess up the proof, which would mean I would've noticed it.
 
-This weakness could be ameliorated by proving a relationship between this specification and the `http://www.visual6502.org/` netlist.
+This weakness could be ameliorated by proving a relationship between this specification and the http://www.visual6502.org/ netlist.
 But I don't know how to properly specify the set of possible behaviors of a transistor circuit.
 
 --------------

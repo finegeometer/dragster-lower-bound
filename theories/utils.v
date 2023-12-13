@@ -1,5 +1,26 @@
+(*|
+=====
+Utils
+=====
+
+Helper code for the rest of the project.
+
+----
+Byte
+----
+
+Mostly thorems relating Coq's builtin ``byte`` type to ``std++``'s ``bv 8``.
+I try to stick to the latter, but there's occasionally a reason to use the former.
+
+This is a bit of a low-effort file — I basically handle all the proofs by 256-way case splits, even when there's a more elegant method.
+
+|*)
+
 Import Byte.
-From stdpp Require Import ssreflect unstable.bitvector unstable.bitvector_tactics.
+From stdpp Require Import
+    ssreflect unstable.bitvector unstable.bitvector_tactics.
+
+Global Instance byte_inhab : Inhabited byte := populate x00.
 
 Definition Z_of_byte (w : byte) : Z :=
     let: (a, (b, (c, (d, (e, (f, (g, h))))))) := to_bits w in
@@ -29,7 +50,6 @@ Proof. by case w. Qed.
 Definition bv_of_byte (w : byte) : bv 8 := BV _ (Z_of_byte w).
 Definition byte_of_bv (w : bv 8) : byte := byte_of_Z (bv_unsigned w).
 
-(* There's probably a shorter way to write these proofs? But endless case-splits seem to work. *)
 Theorem bv_of_byte_of_bv w : bv_of_byte (byte_of_bv w) = w.
 Proof.
     apply bv_eq.
@@ -553,6 +573,8 @@ Proof.
     by case w.
 Qed.
 
+(* ``bv_to_byte``, as a giant lookup table.
+This is more efficient, and avoids annoying computations in proofs. *)
 Definition fast_bv_of_byte (w : byte) : bv 8 :=
 match w with
 | x00 => 0x00
