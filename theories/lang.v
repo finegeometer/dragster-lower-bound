@@ -6,7 +6,7 @@ From theories Require Import spec.
 
 
 Definition claim (s : state) : Prop :=
-    forall p, has_just_won s p ->
+    forall p, player_has_won s p ->
     exists t, timer_in_hundredths s p t /\ (t >=? 557)%Z.
 
 Inductive val :=.
@@ -231,7 +231,13 @@ Proof.
     iDestruct "H" as "[H1 [PC H2]]".
     iSplitL "H1"; first done.
     iSplitL "PC".
-    - rewrite /f (pc_init s s_initial).
+    - rewrite /f.
+
+        move: (pc_init s s_initial) => H.
+        rewrite /fetch in H.
+        simpl in H.
+        move: H => [? [? [-> [-> ->]]]].
+
         have ->: bv_concat 16 (rom.ROM 0x7fc) (rom.ROM 0x7fd) = 0xf000%bv.
         {
             compute.
@@ -272,10 +278,13 @@ Class langGpreS Σ := LangPreG {
 
 Lemma initial_claim s : initial s -> claim s.
 Proof.
-    rewrite /claim /has_just_won.
-    move=> [_ ->].
+    rewrite /claim /player_has_won /someone_has_won.
+    move=> [_ [? [? [-> [-> ->]]]]].
     move=> ? [_ [contra _]].
     exfalso; move: contra.
+    clear.
+    have ->: (trunc 11 (0xfffc : bv 16) = 0x7fc)%bv by bv_simplify.
+    have ->: (trunc 11 (0xfffd : bv 16) = 0x7fd)%bv by bv_simplify.
     by compute.
 Qed.
 

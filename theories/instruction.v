@@ -553,7 +553,7 @@ Definition parse_instr (opcode : bv 8) : option linear_instr :=
 
 (* Lemmas leading up to the theorem 300 lines below. *)
 Lemma run_SetFlag s1 s2 f val :
-    flag_instruction s1 s2 f val ->
+    flag_instr s1 s2 f val ->
     run_instr (SetFlag f val) s1 s2.
 Proof.
     rewrite /run_instr.
@@ -561,7 +561,7 @@ Proof.
 Qed.
 
 Lemma run_transfer s1 s2 r1 r2 :
-    transfer_instruction s1 s2 r1 r2 ->
+    transfer_instr s1 s2 r1 r2 ->
     run_instr (Mov true (RegMode r1) (RegMode r2)) s1 s2.
 Proof.
     rewrite /run_instr /write.
@@ -574,7 +574,7 @@ Proof.
 Qed.
 Lemma run_store s1 s2 r mode (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_arg_len mode')) ->
-    store_instruction s1 s2 r mode len ->
+    store_instr s1 s2 r mode len ->
     (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
     run_instr (Mov false (RegMode r) mode') s1 s2.
 Proof.
@@ -589,7 +589,7 @@ Proof.
 Qed.
 Lemma run_load s1 s2 r mode (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_arg_len mode')) ->
-    load_instruction s1 s2 r mode len ->
+    load_instr s1 s2 r mode len ->
     (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
     run_instr (Mov true mode' (RegMode r)) s1 s2.
 Proof.
@@ -605,7 +605,7 @@ Qed.
 
 Lemma run_Or s1 s2 mode (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_arg_len mode')) ->
-    logic_instruction s1 s2 bv_or mode len ->
+    logic_instr s1 s2 bv_or mode len ->
     (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
     run_instr (Binary Or (RegMode A) mode') s1 s2.
 Proof.
@@ -620,7 +620,7 @@ Proof.
 Qed.
 Lemma run_And s1 s2 mode (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_arg_len mode')) ->
-    logic_instruction s1 s2 bv_and mode len ->
+    logic_instr s1 s2 bv_and mode len ->
     (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
     run_instr (Binary And (RegMode A) mode') s1 s2.
 Proof.
@@ -635,7 +635,7 @@ Proof.
 Qed.
 Lemma run_Xor s1 s2 mode (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_arg_len mode')) ->
-    logic_instruction s1 s2 bv_xor mode len ->
+    logic_instr s1 s2 bv_xor mode len ->
     (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
     run_instr (Binary Xor (RegMode A) mode') s1 s2.
 Proof.
@@ -737,7 +737,7 @@ Qed.
 
 Lemma run_Shift (right roll : bool) s1 s2 mode (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_arg_len mode')) ->
-    @shift_instruction_mode s1 s2
+    @shift_instr_mode s1 s2
         (if right
         then (if roll then ROR_spec else LSR_spec)
         else (if roll then ROL_spec else ASL_spec))

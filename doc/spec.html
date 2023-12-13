@@ -1,0 +1,732 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" class="alectryon-standalone" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />
+<title>Atari Specification</title>
+<link rel="stylesheet" href="alectryon.css" type="text/css" />
+<link rel="stylesheet" href="docutils_basic.css" type="text/css" />
+<link rel="stylesheet" href="pygments.css" type="text/css" />
+<script type="text/javascript" src="alectryon.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/IBM-type/0.5.4/css/ibm-type.min.css" integrity="sha512-sky5cf9Ts6FY1kstGOBHSybfKqdHR41M0Ldb0BjNiv3ifltoQIsg0zIaQ+wwdwgQ0w9vKFW7Js50lxH9vqNSSw==" crossorigin="anonymous" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/firacode/5.2.0/fira_code.min.css" integrity="sha512-MbysAYimH1hH2xYzkkMHB6MqxBqfP0megxsCLknbYqHVwXTCg9IqHbk+ZP/vnhO8UEW6PaXAkKe2vQ+SWACxxA==" crossorigin="anonymous" />
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<div class="alectryon-root alectryon-centered"><div class="alectryon-banner">Built with <a href="https://github.com/cpitclaudel/alectryon/">Alectryon</a>, running Coq+SerAPI v8.18.0+0.18.1. Bubbles (<span class="alectryon-bubble"></span>) indicate interactive fragments: hover for details, tap to reveal contents. Use <kbd>Ctrl+↑</kbd> <kbd>Ctrl+↓</kbd> to navigate, <kbd>Ctrl+🖱️</kbd> to focus. On Mac, use <kbd>⌘</kbd> instead of <kbd>Ctrl</kbd>.</div><div class="document" id="atari-specification">
+<h1 class="title">Atari Specification</h1>
+
+<p>In this file, I specify the behavior of the Atari 2600.
+I then use this specification to define the <em>claim</em> that Dragster cannot be beaten in less than 5.57 seconds.</p>
+<p>Since the goal of this project is to prove that something <em>isn't</em> possible, I <em>overapproximate</em> the behavior of the Atari.
+So my spec might say something is possible even if it isn't, but it will never say something is impossible if it actually is.</p>
+<p>As this file defines the thing we are proving, it is the one thing that is not formally verified.
+This is a weakness in this proof — if I've misstated the behavior of the Atari, the proof doesn't prove what I think it does.
+But I would expect such an error to cause a big enough impact to completely mess up the proof, which would mean I would've noticed it.</p>
+<p>This weakness could be ameliorated by proving a relationship between this specification and the <code class="highlight coq"><span class="n">http</span><span class="o">://</span><span class="n">www</span><span class="o">.</span><span class="n">visual6502</span><span class="o">.</span><span class="n">org</span><span class="o">/</span></code> netlist.
+But I don't know how to properly specify the set of possible behaviors of a transistor circuit.</p>
+<div class="section" id="bits-and-bytes">
+<h1>Bits and Bytes</h1>
+<p>A <code class="highlight coq"><span class="n">bitvector</span> <span class="n">library</span> <span class="o">&lt;</span><span class="n">https</span><span class="o">://</span><span class="n">plv</span><span class="o">.</span><span class="n">mpi</span><span class="o">-</span><span class="n">sws</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">coqdoc</span><span class="o">/</span><span class="n">stdpp</span><span class="o">/</span><span class="n">stdpp</span><span class="o">.</span><span class="n">unstable</span><span class="o">.</span><span class="n">bitvector</span><span class="o">.</span><span class="n">html</span><span class="o">&gt;</span></code> is provided by <tt class="docutils literal">std++</tt>, but there are a few things that bother me.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk0" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk0"><span class="kn">From</span> stdpp <span class="kn">Require Import</span> ssreflect unstable.bitvector.</label><small class="alectryon-output"><div><div class="alectryon-messages"><blockquote class="alectryon-message">[Loading ML file ssrmatching_plugin.cmxs (<span class="nb">using</span> legacy method) ... <span class="bp">done</span>]</blockquote><blockquote class="alectryon-message">[Loading ML file ssreflect_plugin.cmxs (<span class="nb">using</span> legacy method) ... <span class="bp">done</span>]</blockquote><blockquote class="alectryon-message">[Loading ML file ring_plugin.cmxs (<span class="nb">using</span> legacy method) ... <span class="bp">done</span>]</blockquote><blockquote class="alectryon-message">[Loading ML file zify_plugin.cmxs (<span class="nb">using</span> legacy method) ... <span class="bp">done</span>]</blockquote><blockquote class="alectryon-message">[Loading ML file micromega_plugin.cmxs (<span class="nb">using</span> legacy method) ... <span class="bp">done</span>]</blockquote><blockquote class="alectryon-message">[Loading ML file btauto_plugin.cmxs (<span class="nb">using</span> legacy method) ... <span class="bp">done</span>]</blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Local</span> <span class="kn">Open Scope</span> bv.</span></span></pre><ol class="arabic simple">
+<li>Somehow, there doesn't seem to be a bit test function on bitvectors?</li>
+</ol>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">bit</span> {<span class="nv">n</span>} <span class="nv">i</span> (<span class="nv">w</span> : bv n) : bool := Z.testbit (bv_unsigned w) i.</span></span></pre><ol class="arabic simple" start="2">
+<li>While zero-extension to a shorter word acts as truncation, that's really not intuitive when your code needs a truncation operation.</li>
+</ol>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">trunc</span> {<span class="nv">n</span>} <span class="nv">m</span> (<span class="nv">w</span> : bv n) : bv m := bv_zero_extend m w.</span></span></pre><ol class="arabic simple" start="3">
+<li>I need a boolean-valued equality test.</li>
+</ol>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">bv_eqb</span> {<span class="nv">n</span>} (<span class="nv">w1</span> <span class="nv">w2</span> : bv n) : bool :=
+    <span class="kr">if</span> decide (w1 = w2) <span class="kr">then</span> true <span class="kr">else</span> false.</span></span></pre><ol class="arabic simple" start="4">
+<li>The library's <tt class="docutils literal">bv_concat</tt> takes the high word first. But I want to think in little-endian, so I need to swap that.</li>
+</ol>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">bv_concat</span> <span class="nv">n</span> {<span class="nv">n1</span> <span class="nv">n2</span>} (<span class="nv">b1</span> : bv n1) (<span class="nv">b2</span> : bv n2) : bv n :=
+    bv_concat n b2 b1.</span></span></pre><ol class="arabic simple" start="5">
+<li>I need addition and subtraction operations that take and return carry bits.</li>
+</ol>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">add_with_carry</span> {<span class="nv">n</span>}
+    (<span class="nv">c_in</span> : bool) (<span class="nv">w1</span> <span class="nv">w2</span> : bv n) : bv n * bool :=
+    <span class="kr">let</span> <span class="nv">out</span> :=
+        bv_zero_extend (n + <span class="mi">1</span>) (bool_to_bv <span class="mi">1</span> c_in) +
+        (bv_zero_extend (n + <span class="mi">1</span>) w1 + bv_zero_extend (n + <span class="mi">1</span>) w2)
+    <span class="kr">in</span> (trunc n out, bit (Z.of_N n) out).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">sub_with_inverted_borrow</span> {<span class="nv">n</span>}
+    <span class="nv">cin</span> (<span class="nv">w1</span> <span class="nv">w2</span> : bv n) : bv n * bool :=
+    add_with_carry cin w1 (bv_not w2).</span></span></pre></div>
+<div class="section" id="atari-state">
+<h1>Atari State</h1>
+<p>The Atari 2600 uses a 6507 processor, which is basically a 6502 in a smaller package.</p>
+<p>The 6502 has four registers:
+* The accumulator, <tt class="docutils literal">A</tt>.
+* The index registers, <tt class="docutils literal">X</tt> and <tt class="docutils literal">Y</tt>.
+* The stack pointer, <tt class="docutils literal">SP</tt>.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Inductive</span> <span class="nf">reg</span> := X|Y|A|SP.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk1" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk1"><span class="kn">Global Instance</span> <span class="nf">reg_eq_dec</span> : EqDecision reg.</label><small class="alectryon-output"><div><div class="alectryon-goals"><blockquote class="alectryon-goal"><span class="goal-separator"><hr></span><div class="goal-conclusion">EqDecision reg</div></blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk2" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk2"><span class="kn">Proof</span>.</label><small class="alectryon-output"><div><div class="alectryon-goals"><blockquote class="alectryon-goal"><span class="goal-separator"><hr></span><div class="goal-conclusion">EqDecision reg</div></blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">    </span><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk3" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk3"><span class="nb">unfold</span> EqDecision, Decision.</label><small class="alectryon-output"><div><div class="alectryon-goals"><blockquote class="alectryon-goal"><span class="goal-separator"><hr></span><div class="goal-conclusion"><span class="kr">∀</span> <span class="nv">x</span> <span class="nv">y</span> : reg, {x = y} + {x ≠ y}</div></blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">    </span><span class="alectryon-sentence"><span class="alectryon-input"><span class="nb">case</span>; <span class="nb">case</span>; <span class="kp">try</span> (<span class="bp">by</span> <span class="nb">left</span>); <span class="bp">by</span> <span class="nb">right</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Defined</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">reg_eqb</span> (<span class="nv">r1</span> <span class="nv">r2</span> : reg) : bool :=
+    <span class="kr">if</span> decide (r1 = r2) <span class="kr">then</span> true <span class="kr">else</span> false.</span></span></pre><p>It also has seven boolean flags.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Inductive</span> <span class="nf">flag</span> := N|B|V|D|I|Z|C.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk4" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk4"><span class="kn">Global Instance</span> <span class="nf">flag_eq_dec</span> : EqDecision flag.</label><small class="alectryon-output"><div><div class="alectryon-goals"><blockquote class="alectryon-goal"><span class="goal-separator"><hr></span><div class="goal-conclusion">EqDecision flag</div></blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk5" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk5"><span class="kn">Proof</span>.</label><small class="alectryon-output"><div><div class="alectryon-goals"><blockquote class="alectryon-goal"><span class="goal-separator"><hr></span><div class="goal-conclusion">EqDecision flag</div></blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">    </span><span class="alectryon-sentence"><input class="alectryon-toggle" id="spec-v-chk6" style="display: none" type="checkbox"><label class="alectryon-input" for="spec-v-chk6"><span class="nb">unfold</span> EqDecision, Decision.</label><small class="alectryon-output"><div><div class="alectryon-goals"><blockquote class="alectryon-goal"><span class="goal-separator"><hr></span><div class="goal-conclusion"><span class="kr">∀</span> <span class="nv">x</span> <span class="nv">y</span> : flag, {x = y} + {x ≠ y}</div></blockquote></div></div></small><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">    </span><span class="alectryon-sentence"><span class="alectryon-input"><span class="nb">case</span>; <span class="nb">case</span>; <span class="kp">try</span> (<span class="bp">by</span> <span class="nb">left</span>); <span class="bp">by</span> <span class="nb">right</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Defined</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">flag_eqb</span> (<span class="nv">f1</span> <span class="nv">f2</span> : flag) : bool :=
+    <span class="kr">if</span> decide (f1 = f2) <span class="kr">then</span> true <span class="kr">else</span> false.</span></span></pre><p>Finally, it has a sixteen-bit program counter.</p>
+<p>In addition to the processor, the Atari has 128 bytes of RAM.</p>
+<p>There are also a few other components, which handle things like hardware timers, I/O, and graphics.
+I take a very simple approach to modeling these: Don't!
+I make no assumptions at all about the result of reading from these chips, so I don't have to keep track of their state or behavior.</p>
+<p>With that in mind, the following structure models the state of the Atari.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Record</span> <span class="nf">state</span> := {
+    <span class="c">(* processor *)</span>
+    Reg : reg -&gt; bv <span class="mi">8</span>;
+    Flag : flag -&gt; bool;
+    PC : bv <span class="mi">16</span>;
+
+    <span class="c">(* memory *)</span>
+    RAM : bv <span class="mi">7</span> -&gt; bv <span class="mi">8</span>;
+}.</span></span></pre></div>
+<div class="section" id="reads-and-writes">
+<h1>Reads and Writes</h1>
+<p>The Atari 2600's address space is memory-mapped as follows:</p>
+<pre class="literal-block">
+___1 _xxx xxxx xxxx =&gt; ROM
+___0 ____ 0_xx xxxx =&gt; Television Interface Adapter
+___0 __1_ 1xxx xxxx =&gt; RAM
+___0 __0_ 1__x xxxx =&gt; Peripheral Interface Adapter
+</pre>
+<p>(Technically, the Peripheral Interface Adapter contains the RAM. But I'm using the term to mean the part that isn't the RAM.)</p>
+<p>Let's implement this.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">From</span> theories <span class="kn">Require Import</span> rom.</span></span></pre><p><tt class="docutils literal">fetch s addr value</tt> is the statement, &quot;If the Atari is in state <tt class="docutils literal">s</tt>, a read from <tt class="docutils literal">addr</tt> <em>might</em> return <tt class="docutils literal">value</tt>.&quot;.</p>
+<p>In particular, when <tt class="docutils literal">addr</tt> points to the TIA or PIA, <tt class="docutils literal">fetch s addr value</tt> is simply <tt class="docutils literal">True</tt>.
+Since I don't model those components, I assume they can do anything they want.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">fetch</span> (<span class="nv">s</span> : state) (<span class="nv">addr</span> : bv <span class="mi">16</span>) (<span class="nv">value</span> : bv <span class="mi">8</span>) : <span class="kt">Prop</span> :=
+    <span class="kr">if</span> bit <span class="mi">12</span> addr
+    <span class="kr">then</span> value = ROM (trunc <span class="mi">11</span> addr)
+    <span class="kr">else</span> <span class="kr">if</span> negb (bit <span class="mi">7</span> addr) || bit <span class="mi">9</span> addr
+    <span class="kr">then</span> <span class="kt">True</span>
+    <span class="kr">else</span> value = RAM s (trunc <span class="mi">7</span> addr).</span></span></pre><p>If <tt class="docutils literal">ram</tt> is the current state of the RAM, <tt class="docutils literal">write addr value ram</tt> is the state after writing <tt class="docutils literal">value</tt> to address <tt class="docutils literal">addr</tt>.</p>
+<p>Note that if you write to anything other than the RAM, nothing happens:</p>
+<ul>
+<li><p class="first">Writing to the TIA or PIA will change their state. But that state isn't modeled, so who cares?</p>
+</li>
+<li><p class="first">If you write to the ROM...</p>
+<p>Honestly, I can't find a clear answer for what happens.
+But the ROM has no state to change, and all the other chips are deselected,
+so the only reasonable option seems to be that nothing happens.</p>
+</li>
+</ul>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">write</span> (<span class="nv">addr</span> : bv <span class="mi">16</span>) (<span class="nv">value</span> : bv <span class="mi">8</span>)
+    (<span class="nv">ram</span> : bv <span class="mi">7</span> -&gt; bv <span class="mi">8</span>) : bv <span class="mi">7</span> -&gt; bv <span class="mi">8</span> :=
+    <span class="kr">if</span> bit <span class="mi">12</span> addr
+    <span class="kr">then</span> ram
+    <span class="kr">else</span> <span class="kr">if</span> negb (bit <span class="mi">7</span> addr) || bit <span class="mi">9</span> addr
+    <span class="kr">then</span> ram
+    <span class="kr">else</span> <span class="kr">fun</span> <span class="nv">addr&#39;</span> =&gt;
+        <span class="kr">if</span> bv_eqb (trunc <span class="mi">7</span> addr) addr&#39;
+        <span class="kr">then</span> value
+        <span class="kr">else</span> ram addr&#39;.</span></span></pre></div>
+<div class="section" id="startup">
+<h1>Startup</h1>
+<p>When the Atari is turned on, the interrupt-disable flag is turned on,
+and the program counter is set to the address stored at 0xfffc and 0xfffd.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Record</span> <span class="nf">initial</span> (<span class="nv">s</span> : state) : <span class="kt">Prop</span> := {
+    init_interrupt_disable : Flag s I;
+    pc_init : <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s <span class="mi">0</span>xfffc w1 /\
+        fetch s <span class="mi">0</span>xfffd w2 /\
+        PC s = bv_concat <span class="mi">16</span> w1 w2
+}.</span></span></pre></div>
+<div class="section" id="instruction-stepping">
+<h1>Instruction Stepping</h1>
+<p>If the current state is <tt class="docutils literal">s1</tt>, is it possible that after one instruction, the state will be <tt class="docutils literal">s2</tt>?</p>
+<p>Recall that I am <em>overapproximating</em> the behavior of the Atari.
+So the specification takes the form a long list of restrictions.
+E.g. &quot;If running instruction <tt class="docutils literal">0xea</tt> can transform state <tt class="docutils literal">s1</tt> into <tt class="docutils literal">s2</tt>,
+then we must have <tt class="docutils literal">PC s2 = PC s1 + 1</tt>, <tt class="docutils literal">Reg s2 = Reg s1</tt>, <tt class="docutils literal">Flag s2 = Flag s1</tt>, and <tt class="docutils literal">RAM s2 = RAM s1</tt>.&quot;.</p>
+<p>If you scroll to the bottom of this section, you'll find the record <tt class="docutils literal">instruction</tt>.
+This is that list. Everything above that is helper functions for defining the restrictions.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Section</span> <span class="nf">StepSpec</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Context</span> (<span class="nv">s1</span> <span class="nv">s2</span> : state).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">setReg</span> (<span class="nv">r</span> : reg) (<span class="nv">value</span> : bv <span class="mi">8</span>) : reg -&gt; bv <span class="mi">8</span> :=
+    <span class="kr">fun</span> <span class="nv">r&#39;</span> =&gt; <span class="kr">if</span> reg_eqb r r&#39; <span class="kr">then</span> value <span class="kr">else</span> Reg s1 r&#39;.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">setNZ</span> (<span class="nv">value</span> : bv <span class="mi">8</span>) : flag -&gt; bool := <span class="kr">fun</span> <span class="nv">f</span> =&gt;
+    <span class="kr">match</span> f <span class="kr">with</span>
+    | N =&gt; bit <span class="mi">7</span> value
+    | Z =&gt; bv_eqb value <span class="mi">0</span>x00
+    | _ =&gt; Flag s1 f
+    <span class="kr">end</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">transfer_instr</span> <span class="nv">r1</span> <span class="nv">r2</span> :=
+    PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+    Reg s2 = setReg r2 (Reg s1 r1) /\
+    Flag s2 = setNZ (Reg s1 r1) /\
+    RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">flag_instr</span> (<span class="nv">f</span> : flag) (<span class="nv">value</span> : bool) : <span class="kt">Prop</span> :=
+    PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+    Reg s2 = Reg s1 /\
+    (Flag s2 = <span class="kr">fun</span> <span class="nv">f&#39;</span> =&gt; 
+        <span class="kr">if</span> flag_eqb f f&#39;
+        <span class="kr">then</span> value
+        <span class="kr">else</span> Flag s1 f&#39;) /\
+    RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">branch_instr</span> (<span class="nv">cond</span> : state -&gt; bool) : <span class="kt">Prop</span> :=
+    <span class="kr">exists</span> <span class="nv">dist</span>,
+        fetch s1 (PC s1 `+Z` <span class="mi">1</span>) dist /\
+        (PC s2 =
+            <span class="kr">let</span> <span class="nv">pc</span> := PC s1 `+Z` <span class="mi">2</span> <span class="kr">in</span>
+            <span class="kr">if</span> cond s1
+            <span class="kr">then</span> pc + bv_sign_extend <span class="mi">16</span> dist
+            <span class="kr">else</span> pc) /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">mem_addressing_mode</span> := state -&gt; bv <span class="mi">16</span> -&gt; <span class="kt">Prop</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">absolute</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w1 /\
+        fetch s (PC s `+Z` <span class="mi">2</span>) w2 /\
+        addr = bv_concat <span class="mi">16</span> w1 w2.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">absolute_x</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w1 /\
+        fetch s (PC s `+Z` <span class="mi">2</span>) w2 /\
+        addr = bv_concat <span class="mi">16</span> w1 w2 + bv_zero_extend <span class="mi">16</span> (Reg s X).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">absolute_y</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w1 /\
+        fetch s (PC s `+Z` <span class="mi">2</span>) w2 /\
+        addr = bv_concat <span class="mi">16</span> w1 w2 + bv_zero_extend <span class="mi">16</span> (Reg s Y).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">zero_page</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w /\
+        addr = bv_zero_extend <span class="mi">16</span> w.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">zero_page_x</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w /\
+        addr = bv_zero_extend <span class="mi">16</span> (w + Reg s X).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">zero_page_y</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w /\
+        addr = bv_zero_extend <span class="mi">16</span> (w + Reg s Y).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">indirect_x</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">w</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) w /\
+        <span class="kr">let</span> <span class="nv">indir</span> := w + Reg s X <span class="kr">in</span>
+        fetch s (bv_zero_extend <span class="mi">16</span> indir) w1 /\
+        fetch s (bv_zero_extend <span class="mi">16</span> (indir `+Z` <span class="mi">1</span>)) w2 /\
+        addr = bv_concat <span class="mi">16</span> w1 w2.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">indirect_y</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; <span class="kr">exists</span> <span class="nv">indir</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s (PC s `+Z` <span class="mi">1</span>) indir /\
+        fetch s (bv_zero_extend <span class="mi">16</span> indir) w1 /\
+        fetch s (bv_zero_extend <span class="mi">16</span> (indir `+Z` <span class="mi">1</span>)) w2 /\
+        addr = bv_concat <span class="mi">16</span> w1 w2 + bv_zero_extend <span class="mi">16</span> (Reg s Y).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp"><span class="c">(* This isn&#39;t traditionally treated as a *memory* addressing mode.</span>
+<span class="c">    But in a sense, it is.</span>
+<span class="c">    It accesses the memory immediately following the opcode! *)</span>
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">immediate</span> : mem_addressing_mode :=
+    <span class="kr">fun</span> <span class="nv">s</span> <span class="nv">addr</span> =&gt; addr = PC s `+Z` <span class="mi">1</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">store_instr</span> <span class="nv">register</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span>,
+        mode s1 addr /\
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = write addr (Reg s1 register) (RAM s1).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">load_instr</span> <span class="nv">register</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w</span>,
+        mode s1 addr /\
+        fetch s1 addr w /\
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = setReg register w /\
+        Flag s2 = setNZ w /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">logic_instr</span> <span class="nv">operation</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w</span>,
+        mode s1 addr /\
+        fetch s1 addr w /\
+        <span class="kr">let</span> <span class="nv">w</span> := operation (Reg s1 A) w <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = setReg A w /\
+        Flag s2 = setNZ w /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">BIT_mode</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w</span>,
+        mode s1 addr /\
+        fetch s1 addr w /\
+        <span class="kr">let</span> <span class="nv">w</span> := bv_and (Reg s1 A) w <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | Z =&gt; bv_eqb w <span class="mi">0</span>x00
+            | N =&gt; bit <span class="mi">7</span> w
+            | V =&gt; bit <span class="mi">6</span> w
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">INC_reg</span> <span class="nv">r</span> :=
+    <span class="kr">let</span> <span class="nv">w</span> := Reg s1 r `+Z` <span class="mi">1</span> <span class="kr">in</span>
+    PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+    Reg s2 = setReg r w /\
+    Flag s2 = setNZ w /\
+    RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">INC_mode</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w</span>,
+        mode s1 addr /\
+        fetch s1 addr w /\
+        <span class="kr">let</span> <span class="nv">w</span> := w `+Z` <span class="mi">1</span> <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = setNZ w /\
+        RAM s2 = write addr w (RAM s1).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">DEC_reg</span> <span class="nv">r</span> :=
+    <span class="kr">let</span> <span class="nv">w</span> := Reg s1 r `-Z` <span class="mi">1</span> <span class="kr">in</span>
+    PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+    Reg s2 = setReg r w /\
+    Flag s2 = setNZ w /\
+    RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">DEC_mode</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w</span>,
+        mode s1 addr /\
+        fetch s1 addr w /\
+        <span class="kr">let</span> <span class="nv">w</span> := bv_sub_Z w <span class="mi">1</span> <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = setNZ w /\
+        RAM s2 = write addr w (RAM s1).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">shift_instr_A</span>
+    (<span class="nv">shift_spec</span> : bv <span class="mi">8</span> -&gt; bool -&gt; bv <span class="mi">8</span> -&gt; bool -&gt; <span class="kt">Prop</span>) :=
+    <span class="kr">exists</span> <span class="nv">cout</span> (<span class="nv">w</span> : bv <span class="mi">8</span>),
+        shift_spec
+            (Reg s1 A) (Flag s1 C)
+            w cout /\
+        PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+        Reg s2 = setReg A w /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w
+            | Z =&gt; bv_eqb w <span class="mi">0</span>x00
+            | C =&gt; cout
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">shift_instr_mode</span>
+    (<span class="nv">shift_spec</span> : bv <span class="mi">8</span> -&gt; bool -&gt; bv <span class="mi">8</span> -&gt; bool -&gt; <span class="kt">Prop</span>) <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w_in</span> <span class="nv">cout</span> (<span class="nv">w_out</span> : bv <span class="mi">8</span>),
+        mode s1 addr /\
+        fetch s1 addr w_in /\
+        shift_spec
+            w_in (Flag s1 C)
+            w_out cout /\
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w_out
+            | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
+            | C =&gt; cout
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = write addr w_out (RAM s1).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">ROL_spec</span> (<span class="nv">w1</span> : bv <span class="mi">8</span>) <span class="nv">c1</span> (<span class="nv">w2</span> : bv <span class="mi">8</span>) <span class="nv">c2</span> :=
+    bv_concat <span class="mi">9</span> w2 (bool_to_bv <span class="mi">1</span> c2) =
+    bv_concat <span class="mi">9</span> (bool_to_bv <span class="mi">1</span> c1) w1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">ROR_spec</span> (<span class="nv">w1</span> : bv <span class="mi">8</span>) <span class="nv">c1</span> (<span class="nv">w2</span> : bv <span class="mi">8</span>) <span class="nv">c2</span> :=
+    bv_concat <span class="mi">9</span> (bool_to_bv <span class="mi">1</span> c2) w2 =
+    bv_concat <span class="mi">9</span> w1 (bool_to_bv <span class="mi">1</span> c1).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">ASL_spec</span> (<span class="nv">w1</span> : bv <span class="mi">8</span>) (<span class="nv">_</span> : bool) (<span class="nv">w2</span> : bv <span class="mi">8</span>) <span class="nv">c2</span> :=
+    bv_concat <span class="mi">9</span> w2 (bool_to_bv <span class="mi">1</span> c2) =
+    bv_concat <span class="mi">9</span> (bool_to_bv <span class="mi">1</span> false) w1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">LSR_spec</span> (<span class="nv">w1</span> : bv <span class="mi">8</span>) (<span class="nv">_</span> : bool) (<span class="nv">w2</span> : bv <span class="mi">8</span>) <span class="nv">c2</span> :=
+    bv_concat <span class="mi">9</span> (bool_to_bv <span class="mi">1</span> c2) w2 =
+    bv_concat <span class="mi">9</span> w1 (bool_to_bv <span class="mi">1</span> false).</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">CMP_mode</span> <span class="nv">register</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w</span>,
+        mode s1 addr /\
+        fetch s1 addr w /\
+        <span class="kr">let</span>: (w, c) :=
+            sub_with_inverted_borrow true (Reg s1 register) w
+        <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w
+            | Z =&gt; bv_eqb w <span class="mi">0</span>x00
+            | C =&gt; c
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">is_bcd</span> (<span class="nv">w</span> : bv <span class="mi">8</span>) (<span class="nv">n</span> : BinNums.Z) : <span class="kt">Prop</span> :=
+    <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span> : bv <span class="mi">4</span>,
+        (w = bv_concat <span class="mi">8</span> w1 w2 /\
+        bv_unsigned w1 &lt;? <span class="mi">10</span> /\
+        bv_unsigned w2 &lt;? <span class="mi">10</span> /\
+        n = bv_unsigned w1 * <span class="mi">10</span> + bv_unsigned w2)%Z.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">ADC_decimal_relation</span>
+    (<span class="nv">c_in</span> : bool) (<span class="nv">w1</span> <span class="nv">w2</span> <span class="nv">w</span> : bv <span class="mi">8</span>) (<span class="nv">c_out</span> : bool) : <span class="kt">Prop</span> :=
+    <span class="kr">forall</span> <span class="nv">n1</span> <span class="nv">n2</span>, is_bcd w1 n1 -&gt; is_bcd w2 n2 -&gt;
+    <span class="kr">exists</span> <span class="nv">n</span>, is_bcd w n /\
+    ( n + (<span class="kr">if</span> c_out <span class="kr">then</span> <span class="mi">100</span> <span class="kr">else</span> <span class="mi">0</span>)
+    = (<span class="kr">if</span> c_in <span class="kr">then</span> <span class="mi">1</span> <span class="kr">else</span> <span class="mi">0</span>) + n1 + n2
+    )%Z.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">ADC_mode</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">if</span> Flag s1 D
+    <span class="kr">then</span> <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w_in</span> <span class="nv">w_out</span> <span class="nv">c_out</span> <span class="nv">v</span>,
+        mode s1 addr /\
+        fetch s1 addr w_in /\
+        ADC_decimal_relation (Flag s1 C) (Reg s1 A) w_in w_out c_out /\
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = setReg A w_out /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w_out
+            | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
+            | C =&gt; c_out
+            | V =&gt; v
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1
+    <span class="kr">else</span> <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w_in</span>,
+        mode s1 addr /\
+        fetch s1 addr w_in /\
+        <span class="kr">let</span>:
+            (w_out, c) := add_with_carry (Flag s1 C) (Reg s1 A) w_in
+        <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = setReg A w_out /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w_out
+            | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
+            | C =&gt; c
+            | V =&gt;
+                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> (Reg s1 A))) &amp;&amp;
+                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> w_in))
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">SBC_decimal_relation</span>
+    (<span class="nv">c_in</span> : bool) (<span class="nv">w1</span> <span class="nv">w2</span> <span class="nv">w</span> : bv <span class="mi">8</span>) (<span class="nv">c_out</span> : bool) : <span class="kt">Prop</span> :=
+    <span class="kr">forall</span> <span class="nv">n1</span> <span class="nv">n2</span>, is_bcd w1 n1 -&gt; is_bcd w2 n2 -&gt;
+    <span class="kr">exists</span> <span class="nv">n</span>, is_bcd w n /\
+    ( n + (<span class="kr">if</span> c_out <span class="kr">then</span> <span class="mi">0</span> <span class="kr">else</span> <span class="mi">100</span>) + n2 + (<span class="kr">if</span> c_in <span class="kr">then</span> <span class="mi">0</span> <span class="kr">else</span> <span class="mi">1</span>)
+    = n1)%Z.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">SBC_mode</span> <span class="nv">mode</span> <span class="nv">mode_len</span> :=
+    <span class="kr">if</span> Flag s1 D
+    <span class="kr">then</span> <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w_in</span> <span class="nv">w_out</span> <span class="nv">c_out</span> <span class="nv">v</span>,
+        mode s1 addr /\
+        fetch s1 addr w_in /\
+        SBC_decimal_relation (Flag s1 C) (Reg s1 A) w_in w_out c_out /\
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = setReg A w_out /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w_out
+            | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
+            | C =&gt; c_out
+            | V =&gt; v
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1
+    <span class="kr">else</span> <span class="kr">exists</span> <span class="nv">addr</span> <span class="nv">w_in</span>,
+        mode s1 addr /\
+        fetch s1 addr w_in /\
+        <span class="kr">let</span>: (w_out, c) :=
+            sub_with_inverted_borrow (Flag s1 C) (Reg s1 A) w_in
+        <span class="kr">in</span>
+        PC s2 = PC s1 `+Z` mode_len /\
+        Reg s2 = setReg A w_out /\
+        Flag s2 = (<span class="kr">fun</span> <span class="nv">f</span> =&gt;
+            <span class="kr">match</span> f <span class="kr">with</span>
+            | N =&gt; bit <span class="mi">7</span> w_out
+            | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
+            | C =&gt; c
+            | V =&gt;
+                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> (Reg s1 A))) &amp;&amp;
+                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> w_in))
+            | _ =&gt; Flag s1 f
+            <span class="kr">end</span>) /\
+        RAM s2 = RAM s1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Record</span> <span class="nf">instruction</span> (<span class="nv">op</span> : bv <span class="mi">8</span>) : <span class="kt">Prop</span> := {
+    NOP : op = <span class="mi">0</span>xea -&gt;
+        PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1;
+
+    TXS : op = <span class="mi">0</span>x9a -&gt;
+        PC s2 = PC s1 `+Z` <span class="mi">1</span> /\
+        Reg s2 = setReg SP (Reg s1 X) /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1;
+    TSX : op = <span class="mi">0</span>xba -&gt; transfer_instr SP X;
+    TAX : op = <span class="mi">0</span>xaa -&gt; transfer_instr A X;
+    TXA : op = <span class="mi">0</span>x8a -&gt; transfer_instr X A;
+    TAY : op = <span class="mi">0</span>xa8 -&gt; transfer_instr A Y;
+    TYA : op = <span class="mi">0</span>x98 -&gt; transfer_instr Y A;
+
+    CLC : op = <span class="mi">0</span>x18 -&gt; flag_instr C false;
+    SEC : op = <span class="mi">0</span>x38 -&gt; flag_instr C true;
+    CLI : op = <span class="mi">0</span>x58 -&gt; flag_instr I false;
+    SEI : op = <span class="mi">0</span>x78 -&gt; flag_instr I true;
+    CLV : op = <span class="mi">0</span>xb8 -&gt; flag_instr V false;
+    CLD : op = <span class="mi">0</span>xd8 -&gt; flag_instr D false;
+    SED : op = <span class="mi">0</span>xf8 -&gt; flag_instr D true;
+
+    RTS : op = <span class="mi">0</span>x60 -&gt; <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s1 (bv_zero_extend <span class="mi">16</span> (Reg s1 SP `+Z` <span class="mi">1</span>)) w1 /\
+        fetch s2 (bv_zero_extend <span class="mi">16</span> (Reg s1 SP `+Z` <span class="mi">2</span>)) w2 /\
+        PC s2 = bv_concat <span class="mi">16</span> w1 w2 `+Z` <span class="mi">1</span> /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1;
+
+    BPL : op = <span class="mi">0</span>x10 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s N));
+    BMI : op = <span class="mi">0</span>x30 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s N));
+    BVC : op = <span class="mi">0</span>x50 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s V));
+    BVS : op = <span class="mi">0</span>x70 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s V));
+    BCC : op = <span class="mi">0</span>x90 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s N));
+    BCS : op = <span class="mi">0</span>xb0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s N));
+    BNE : op = <span class="mi">0</span>xd0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s Z));
+    BEQ : op = <span class="mi">0</span>xf0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s Z));
+
+    STA_absolute   : op = <span class="mi">0</span>x8d -&gt; store_instr A absolute <span class="mi">3</span>;
+    STX_absolute   : op = <span class="mi">0</span>x8e -&gt; store_instr X absolute <span class="mi">3</span>;
+    STY_absolute   : op = <span class="mi">0</span>x8c -&gt; store_instr Y absolute <span class="mi">3</span>;
+    STA_absolute_x : op = <span class="mi">0</span>x9d -&gt; store_instr A absolute_x <span class="mi">3</span>;
+    STA_absolute_y : op = <span class="mi">0</span>x99 -&gt; store_instr A absolute_y <span class="mi">3</span>;
+    STA_zero_page  : op = <span class="mi">0</span>x85 -&gt; store_instr A zero_page <span class="mi">2</span>;
+    STX_zero_page  : op = <span class="mi">0</span>x86 -&gt; store_instr X zero_page <span class="mi">2</span>;
+    STY_zero_page  : op = <span class="mi">0</span>x84 -&gt; store_instr Y zero_page <span class="mi">2</span>;
+    STA_zero_page_x: op = <span class="mi">0</span>x95 -&gt; store_instr A zero_page_x <span class="mi">2</span>;
+    STX_zero_page_y: op = <span class="mi">0</span>x96 -&gt; store_instr X zero_page_y <span class="mi">2</span>;
+    STY_zero_page_x: op = <span class="mi">0</span>x94 -&gt; store_instr Y zero_page_x <span class="mi">2</span>;
+    STA_indirect_x : op = <span class="mi">0</span>x81 -&gt; store_instr A indirect_x <span class="mi">2</span>;
+    STA_indirect_y : op = <span class="mi">0</span>x91 -&gt; store_instr A indirect_y <span class="mi">2</span>;
+
+    LDA_absolute   : op = <span class="mi">0</span>xad -&gt; load_instr A absolute <span class="mi">3</span>;
+    LDX_absolute   : op = <span class="mi">0</span>xae -&gt; load_instr X absolute <span class="mi">3</span>;
+    LDY_absolute   : op = <span class="mi">0</span>xac -&gt; load_instr Y absolute <span class="mi">3</span>;
+    LDA_absolute_x : op = <span class="mi">0</span>xbd -&gt; load_instr A absolute_x <span class="mi">3</span>;
+    LDA_absolute_y : op = <span class="mi">0</span>xb9 -&gt; load_instr A absolute_y <span class="mi">3</span>;
+    LDX_absolute_y : op = <span class="mi">0</span>xbe -&gt; load_instr X absolute_y <span class="mi">3</span>;
+    LDY_absolute_x : op = <span class="mi">0</span>xbc -&gt; load_instr Y absolute_x <span class="mi">3</span>;
+    LDA_immediate  : op = <span class="mi">0</span>xa9 -&gt; load_instr A immediate <span class="mi">2</span>;
+    LDX_immediate  : op = <span class="mi">0</span>xa2 -&gt; load_instr X immediate <span class="mi">2</span>;
+    LDY_immediate  : op = <span class="mi">0</span>xa0 -&gt; load_instr Y immediate <span class="mi">2</span>;
+    LDA_zero_page  : op = <span class="mi">0</span>xa5 -&gt; load_instr A zero_page <span class="mi">2</span>;
+    LDX_zero_page  : op = <span class="mi">0</span>xa6 -&gt; load_instr X zero_page <span class="mi">2</span>;
+    LDY_zero_page  : op = <span class="mi">0</span>xa4 -&gt; load_instr Y zero_page <span class="mi">2</span>;
+    LDA_zero_page_x: op = <span class="mi">0</span>xb5 -&gt; load_instr A zero_page_x <span class="mi">2</span>;
+    LDX_zero_page_y: op = <span class="mi">0</span>xb6 -&gt; load_instr X zero_page_y <span class="mi">2</span>;
+    LDY_zero_page_x: op = <span class="mi">0</span>xb4 -&gt; load_instr Y zero_page_x <span class="mi">2</span>;
+    LDA_indirect_x : op = <span class="mi">0</span>xa1 -&gt; load_instr A indirect_x <span class="mi">2</span>;
+    LDA_indirect_y : op = <span class="mi">0</span>xb1 -&gt; load_instr A indirect_y <span class="mi">2</span>;
+
+    ORA_indirect_x : op = <span class="mi">0</span>x01 -&gt; logic_instr bv_or  indirect_x <span class="mi">2</span>;
+    ORA_zero_page  : op = <span class="mi">0</span>x05 -&gt; logic_instr bv_or  zero_page  <span class="mi">2</span>;
+    ORA_immediate  : op = <span class="mi">0</span>x09 -&gt; logic_instr bv_or  immediate  <span class="mi">2</span>;
+    ORA_absolute   : op = <span class="mi">0</span>x0d -&gt; logic_instr bv_or  absolute   <span class="mi">3</span>;
+    ORA_indirect_y : op = <span class="mi">0</span>x11 -&gt; logic_instr bv_or  indirect_y <span class="mi">2</span>;
+    ORA_zero_page_x: op = <span class="mi">0</span>x15 -&gt; logic_instr bv_or  zero_page_x <span class="mi">2</span>;
+    ORA_absolute_y : op = <span class="mi">0</span>x19 -&gt; logic_instr bv_or  absolute_y <span class="mi">3</span>;
+    ORA_absolute_x : op = <span class="mi">0</span>x1d -&gt; logic_instr bv_or  absolute_x <span class="mi">3</span>;
+    AND_indirect_x : op = <span class="mi">0</span>x21 -&gt; logic_instr bv_and indirect_x <span class="mi">2</span>;
+    AND_zero_page  : op = <span class="mi">0</span>x25 -&gt; logic_instr bv_and zero_page  <span class="mi">2</span>;
+    AND_immediate  : op = <span class="mi">0</span>x29 -&gt; logic_instr bv_and immediate  <span class="mi">2</span>;
+    AND_absolute   : op = <span class="mi">0</span>x2d -&gt; logic_instr bv_and absolute   <span class="mi">3</span>;
+    AND_indirect_y : op = <span class="mi">0</span>x31 -&gt; logic_instr bv_and indirect_y <span class="mi">2</span>;
+    AND_zero_page_x: op = <span class="mi">0</span>x35 -&gt; logic_instr bv_and zero_page_x <span class="mi">2</span>;
+    AND_absolute_y : op = <span class="mi">0</span>x39 -&gt; logic_instr bv_and absolute_y <span class="mi">3</span>;
+    AND_absolute_x : op = <span class="mi">0</span>x3d -&gt; logic_instr bv_and absolute_x <span class="mi">3</span>;
+    EOR_indirect_x : op = <span class="mi">0</span>x41 -&gt; logic_instr bv_xor indirect_x <span class="mi">2</span>;
+    EOR_zero_page  : op = <span class="mi">0</span>x45 -&gt; logic_instr bv_xor zero_page  <span class="mi">2</span>;
+    EOR_immediate  : op = <span class="mi">0</span>x49 -&gt; logic_instr bv_xor immediate  <span class="mi">2</span>;
+    EOR_absolute   : op = <span class="mi">0</span>x4d -&gt; logic_instr bv_xor absolute   <span class="mi">3</span>;
+    EOR_indirect_y : op = <span class="mi">0</span>x51 -&gt; logic_instr bv_xor indirect_y <span class="mi">2</span>;
+    EOR_zero_page_x: op = <span class="mi">0</span>x55 -&gt; logic_instr bv_xor zero_page_x <span class="mi">2</span>;
+    EOR_absolute_y : op = <span class="mi">0</span>x59 -&gt; logic_instr bv_xor absolute_y <span class="mi">3</span>;
+    EOR_absolute_x : op = <span class="mi">0</span>x5d -&gt; logic_instr bv_xor absolute_x <span class="mi">3</span>;
+
+    BIT_absolute   : op = <span class="mi">0</span>x2c -&gt; BIT_mode absolute  <span class="mi">3</span>;
+    BIT_zero_page  : op = <span class="mi">0</span>x24 -&gt; BIT_mode zero_page <span class="mi">2</span>;
+    BIT_immediate  : op = <span class="mi">0</span>x89 -&gt; BIT_mode immediate <span class="mi">2</span>;
+
+    INX : op = <span class="mi">0</span>xe8 -&gt; INC_reg X;
+    INY : op = <span class="mi">0</span>xc8 -&gt; INC_reg Y;
+    DEX : op = <span class="mi">0</span>xca -&gt; DEC_reg X;
+    DEY : op = <span class="mi">0</span>x88 -&gt; DEC_reg Y;
+
+    INC_absolute   : op = <span class="mi">0</span>xee -&gt; INC_mode absolute <span class="mi">3</span>;
+    INC_absolute_x : op = <span class="mi">0</span>xfe -&gt; INC_mode absolute_x <span class="mi">3</span>;
+    INC_zero_page  : op = <span class="mi">0</span>xe6 -&gt; INC_mode zero_page <span class="mi">2</span>;
+    INC_zero_page_x: op = <span class="mi">0</span>xf6 -&gt; INC_mode zero_page_x <span class="mi">2</span>;
+    DEC_absolute   : op = <span class="mi">0</span>xce -&gt; DEC_mode absolute <span class="mi">3</span>;
+    DEC_absolute_x : op = <span class="mi">0</span>xde -&gt; DEC_mode absolute_x <span class="mi">3</span>;
+    DEC_zero_page  : op = <span class="mi">0</span>xc6 -&gt; DEC_mode zero_page <span class="mi">2</span>;
+    DEC_zero_page_x: op = <span class="mi">0</span>xd6 -&gt; DEC_mode zero_page_x <span class="mi">2</span>;
+
+    ASL_A          : op = <span class="mi">0</span>x0a-&gt;shift_instr_A ASL_spec;
+    ROL_A          : op = <span class="mi">0</span>x2a-&gt;shift_instr_A ROL_spec;
+    LSR_A          : op = <span class="mi">0</span>x4a-&gt;shift_instr_A LSR_spec;
+    ROR_A          : op = <span class="mi">0</span>x6a-&gt;shift_instr_A ROR_spec;
+    ASL_absolute   : op = <span class="mi">0</span>x0e-&gt;shift_instr_mode ASL_spec absolute <span class="mi">3</span>;
+    ROL_absolute   : op = <span class="mi">0</span>x2e-&gt;shift_instr_mode ROL_spec absolute <span class="mi">3</span>;
+    LSR_absolute   : op = <span class="mi">0</span>x4e-&gt;shift_instr_mode LSR_spec absolute <span class="mi">3</span>;
+    ROR_absolute   : op = <span class="mi">0</span>x6e-&gt;shift_instr_mode ROR_spec absolute <span class="mi">3</span>;
+    ASL_absolute_x : op = <span class="mi">0</span>x1e-&gt;shift_instr_mode ASL_spec absolute_x <span class="mi">3</span>;
+    ROL_absolute_x : op = <span class="mi">0</span>x3e-&gt;shift_instr_mode ROL_spec absolute_x <span class="mi">3</span>;
+    LSR_absolute_x : op = <span class="mi">0</span>x5e-&gt;shift_instr_mode LSR_spec absolute_x <span class="mi">3</span>;
+    ROR_absolute_x : op = <span class="mi">0</span>x7e-&gt;shift_instr_mode ROR_spec absolute_x <span class="mi">3</span>;
+    ASL_zero_page  : op = <span class="mi">0</span>x06-&gt;shift_instr_mode ASL_spec zero_page <span class="mi">2</span>;
+    ROL_zero_page  : op = <span class="mi">0</span>x26-&gt;shift_instr_mode ROL_spec zero_page <span class="mi">2</span>;
+    LSR_zero_page  : op = <span class="mi">0</span>x46-&gt;shift_instr_mode LSR_spec zero_page <span class="mi">2</span>;
+    ROR_zero_page  : op = <span class="mi">0</span>x66-&gt;shift_instr_mode ROR_spec zero_page <span class="mi">2</span>;
+    ASL_zero_page_x: op = <span class="mi">0</span>x16-&gt;shift_instr_mode ASL_spec zero_page_x <span class="mi">2</span>;
+    ROL_zero_page_x: op = <span class="mi">0</span>x36-&gt;shift_instr_mode ROL_spec zero_page_x <span class="mi">2</span>;
+    LSR_zero_page_x: op = <span class="mi">0</span>x56-&gt;shift_instr_mode LSR_spec zero_page_x <span class="mi">2</span>;
+    ROR_zero_page_x: op = <span class="mi">0</span>x76-&gt;shift_instr_mode ROR_spec zero_page_x <span class="mi">2</span>;
+
+    CMP_absolute   : op = <span class="mi">0</span>xcd -&gt; CMP_mode A absolute    <span class="mi">3</span>;
+    CPX_absolute   : op = <span class="mi">0</span>xec -&gt; CMP_mode X absolute    <span class="mi">3</span>;
+    CPY_absolute   : op = <span class="mi">0</span>xcc -&gt; CMP_mode Y absolute    <span class="mi">3</span>;
+    CMP_absolute_x : op = <span class="mi">0</span>xdd -&gt; CMP_mode A absolute_x  <span class="mi">3</span>;
+    CMP_absolute_y : op = <span class="mi">0</span>xd9 -&gt; CMP_mode A absolute_y  <span class="mi">3</span>;
+    CMP_immediate  : op = <span class="mi">0</span>xc9 -&gt; CMP_mode A immediate   <span class="mi">2</span>;
+    CPX_immediate  : op = <span class="mi">0</span>xe0 -&gt; CMP_mode X immediate   <span class="mi">2</span>;
+    CPY_immediate  : op = <span class="mi">0</span>xc0 -&gt; CMP_mode Y immediate   <span class="mi">2</span>;
+    CMP_zero_page  : op = <span class="mi">0</span>xc5 -&gt; CMP_mode A zero_page   <span class="mi">2</span>;
+    CPX_zero_page  : op = <span class="mi">0</span>xe4 -&gt; CMP_mode X zero_page   <span class="mi">2</span>;
+    CPY_zero_page  : op = <span class="mi">0</span>xc4 -&gt; CMP_mode Y zero_page   <span class="mi">2</span>;
+    CMP_zero_page_x: op = <span class="mi">0</span>xd5 -&gt; CMP_mode A zero_page_x <span class="mi">2</span>;
+    CMP_indirect_x : op = <span class="mi">0</span>xc1 -&gt; CMP_mode A indirect_x  <span class="mi">2</span>;
+    CMP_indirect_y : op = <span class="mi">0</span>xd1 -&gt; CMP_mode A indirect_y  <span class="mi">2</span>;
+
+    ADC_absolute   : op = <span class="mi">0</span>x6d -&gt; ADC_mode absolute    <span class="mi">3</span>;
+    ADC_absolute_x : op = <span class="mi">0</span>x7d -&gt; ADC_mode absolute_x  <span class="mi">3</span>;
+    ADC_absolute_y : op = <span class="mi">0</span>x79 -&gt; ADC_mode absolute_y  <span class="mi">3</span>;
+    ADC_immediate  : op = <span class="mi">0</span>x69 -&gt; ADC_mode immediate   <span class="mi">2</span>;
+    ADC_zero_page  : op = <span class="mi">0</span>x65 -&gt; ADC_mode zero_page   <span class="mi">2</span>;
+    ADC_zero_page_x: op = <span class="mi">0</span>x75 -&gt; ADC_mode zero_page_x <span class="mi">2</span>;
+    ADC_indirect_x : op = <span class="mi">0</span>x61 -&gt; ADC_mode indirect_x  <span class="mi">2</span>;
+    ADC_indirect_y : op = <span class="mi">0</span>x71 -&gt; ADC_mode indirect_y  <span class="mi">2</span>;
+    SBC_absolute   : op = <span class="mi">0</span>xed -&gt; SBC_mode absolute    <span class="mi">3</span>;
+    SBC_absolute_x : op = <span class="mi">0</span>xfd -&gt; SBC_mode absolute_x  <span class="mi">3</span>;
+    SBC_absolute_y : op = <span class="mi">0</span>xf9 -&gt; SBC_mode absolute_y  <span class="mi">3</span>;
+    SBC_immediate  : op = <span class="mi">0</span>xe9 -&gt; SBC_mode immediate   <span class="mi">2</span>;
+    SBC_zero_page  : op = <span class="mi">0</span>xe5 -&gt; SBC_mode zero_page   <span class="mi">2</span>;
+    SBC_zero_page_x: op = <span class="mi">0</span>xf5 -&gt; SBC_mode zero_page_x <span class="mi">2</span>;
+    SBC_indirect_x : op = <span class="mi">0</span>xe1 -&gt; SBC_mode indirect_x  <span class="mi">2</span>;
+    SBC_indirect_y : op = <span class="mi">0</span>xf1 -&gt; SBC_mode indirect_y  <span class="mi">2</span>;
+
+    JMP : op = <span class="mi">0</span>x4c -&gt; <span class="kr">exists</span> <span class="nv">addr</span>,
+        absolute s1 addr /\
+        PC s2 = addr /\
+        Reg s2 = Reg s1 /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1;
+    <span class="c">(* Note: If I were to specify JMP_indirect,</span>
+<span class="c">        I&#39;d have to account for the hardware bug. *)</span>
+
+    JSR : op = <span class="mi">0</span>x20 -&gt; <span class="kr">exists</span> <span class="nv">addr</span>,
+        absolute s1 addr /\
+        PC s2 = addr /\
+        Reg s2 = setReg SP (bv_sub_Z (Reg s1 SP) <span class="mi">2</span>) /\
+        Flag s2 = Flag s1 /\
+        RAM s2 =
+            <span class="kr">let</span> <span class="nv">pc</span> := bv_sub_Z (PC s1) <span class="mi">1</span> <span class="kr">in</span>
+            write
+                (bv_zero_extend <span class="mi">16</span> (bv_sub_Z (Reg s1 SP) <span class="mi">1</span>))
+                (bv_extract <span class="mi">0</span> <span class="mi">8</span> pc)
+                (write
+                    (bv_zero_extend <span class="mi">16</span> (Reg s1 SP))
+                    (bv_extract <span class="mi">0</span> <span class="mi">8</span> pc)
+                    (RAM s1));
+}.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">step</span> : <span class="kt">Prop</span> :=
+    <span class="kr">exists</span> <span class="nv">opcode</span>, fetch s1 (PC s1) opcode /\ instruction opcode.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">End</span> <span class="nf">StepSpec</span>.</span></span></pre><p>This completes the specification of the Atari.</p>
+</div>
+<div class="section" id="goal">
+<h1>Goal</h1>
+<p>Ultimately, we want to prove that Dragster cannot be beaten in less than 5.57 seconds.
+Here, I simply <em>state</em> the claim.</p>
+<p>What does it mean to win Dragster?</p>
+<p>The best I can figure out is that Dragster has been won if the branch at address 0xF39E is taken.
+I was hoping there'd be a variable that clearly says &quot;You have won!&quot;, but I couldn't find one.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">someone_has_won</span> (<span class="nv">s</span> : state) :=
+    trunc <span class="mi">11</span> (PC s) = <span class="mi">0</span>x39e /\ ~~ Flag s Z.</span></span></pre><p>But we need to know <em>who</em> has won, so we can check the right player's timer.</p>
+<p>The active player is stored at RAM location 0x0f.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Inductive</span> <span class="nf">Player</span> := P0 | P1.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">player_active</span> (<span class="nv">s</span> : state) (<span class="nv">p</span> : Player) :=
+    RAM s <span class="mi">0</span>x0f = <span class="kr">match</span> p <span class="kr">with</span> P0 =&gt; <span class="mi">0</span>x00 | P1 =&gt; <span class="mi">0</span>x01 <span class="kr">end</span>.</span><span class="alectryon-wsp">
+</span></span><span class="alectryon-wsp">
+</span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">player_has_won</span> (<span class="nv">s</span> : state) (<span class="nv">p</span> : Player) :=
+    player_active s p /\ someone_has_won s.</span></span></pre><p>How do we check the timer?</p>
+<p>Each player's timer is stored in binary-coded decimal, as a three-byte number.
+The first byte is in seconds, the second in hundredths, and the third in ten-thousandths of a second.
+For our level of precision, we only need the first two bytes,
+which are stored at 0x33 and 0x35 for player zero, and 0x34 and 0x36 for player one.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">timer_in_hundredths</span>
+    (<span class="nv">s</span> : state) (<span class="nv">p</span> : Player) (<span class="nv">t</span> : BinNums.Z) : <span class="kt">Prop</span> :=
+    <span class="kr">exists</span> <span class="nv">secs</span> <span class="nv">hundredths</span>,
+        is_bcd
+            (RAM s (<span class="kr">match</span> p <span class="kr">with</span> P0 =&gt; <span class="mi">0</span>x33 | P1 =&gt; <span class="mi">0</span>x34 <span class="kr">end</span>))
+            secs /\
+        is_bcd
+            (RAM s (<span class="kr">match</span> p <span class="kr">with</span> P0 =&gt; <span class="mi">0</span>x35 | P1 =&gt; <span class="mi">0</span>x36 <span class="kr">end</span>))
+            hundredths /\
+        t = (hundredths + secs * <span class="mi">100</span>)%Z.</span></span></pre><p>And at last, we can state the claim.</p>
+<pre class="alectryon-io highlight"><!-- Generator: Alectryon --><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">Goal</span> : <span class="kt">Prop</span> :=
+    <span class="c">(* Choose any state the Atari might have upon startup. *)</span>
+    <span class="kr">forall</span> <span class="nv">s0</span>, initial s0 -&gt;
+    <span class="c">(* Choose any later state, reachable from the starting state. *)</span>
+    <span class="kr">forall</span> <span class="nv">s</span>, rtc step s0 s -&gt;
+    <span class="c">(* Then if some player has just won, *)</span>
+    <span class="kr">forall</span> <span class="nv">p</span>, player_has_won s p -&gt;
+    <span class="c">(* Then that player&#39;s timer is a valid number, *)</span>
+    <span class="kr">exists</span> <span class="nv">t</span>, timer_in_hundredths s p t /\
+    <span class="c">(* which is at least 5.57 seconds. *)</span>
+    (t &gt;=? <span class="mi">557</span>)%Z.</span></span></pre></div>
+</div>
+</div></body>
+</html>
