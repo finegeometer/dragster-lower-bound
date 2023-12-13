@@ -1,0 +1,8 @@
+-Q theories/ theories
+
+theories/utils.v
+theories/rom.v
+theories/spec.v
+theories/instruction.v
+theories/lang.v
+theories/main.v
