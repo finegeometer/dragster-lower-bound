@@ -1,833 +1,1181 @@
-From stdpp Require Import ssreflect unstable.bitvector unstable.bitvector_tactics.
-From theories Require Import utils spec.
+(*|
+###########
+Instruction
+###########
 
-Ltac Zify.zify_post_hook ::= Z.div_mod_to_equations.
+The 6502 has a lot of opcodes.
+About a hundred and thirty that I'm modeling, and a few I'm not.
+In this file, I condense this down to something managable.
 
-Fact bv_inc_inc {n} (x : bv n) : (bv_add_Z (bv_add_Z x 1) 1 = bv_add_Z x 2)%Z.
-Proof.
-    bv_simplify.
-    f_equal.
-    lia.
-Qed.
-
-
-Local Open Scope bv_scope.
-
-(* A location, either in a register or in memory. *)
-Inductive loc := RegLoc : reg -> loc | MemLoc : bv 16 -> loc.
-Definition read (s : state) (l : loc) (w : bv 8) : Prop :=
-    match l with RegLoc r => w = Reg s r | MemLoc addr => fetch s addr w end.
-Definition write (s : state) (l : loc) (w : bv 8) : state -> Prop :=
-    fun s' => match l with
-    | RegLoc r => Reg s' = (fun r' => if reg_eqb r r' then w else Reg s r') /\ RAM s' = RAM s
-    | MemLoc addr => Reg s' = Reg s /\ RAM s' = write addr w (RAM s)
-    end.
+This file comes in three parts.
+1. I define a language of instructions.
+2. I define its behavior.
+3. I prove its behavior matches the Atari's spec.
 
 
-(* A description of how to find a location.
-Covers all of the 6502's addressing modes,
-except implied, which doesn't need a location,
-and relative, which is only used for branches.
-*)
+================
+Part 1: Language
+================
+
+|*)
+
+From theories Require Import spec.
+
+(*|
+
+----------------
+addressing Modes
+----------------
+
+A hundred and thirty opcodes sounds scary.
+But much of the variety comes from the proliferation of *addressing modes*;
+places the instruction can find the value to operate on.
+
+Most of these pick out a memory address. I'll call these "memory addressing modes".
+
+|*)
+
+Inductive mem_mode :=
+| Imm
+| Abs (r : option reg)
+| Zpg (r : option reg)
+| XInd
+| IndY
+| Rel
+.
+
+(*|
+
+But an addressing mode can also pick out a register.
+
+Only one addressing mode actually does this: the "Accumulator" mode.
+Except that isn't entirely true.
+Instructions like ``INX`` and ``INY``, or ``TXA`` and ``TYA``,
+technically don't use an addressing mode.
+But it's simpler to think of them as addressing the `X` and `Y` registers!
+
+So I'll say there's an addressing mode for each register.
+
+|*)
+
 Inductive mode :=
 | RegMode : reg -> mode
 | MemMode : mem_mode -> mode
-
-(* Memory modes are treated separately,
-because it is possible to read two bytes from them.
-This wouldn't make sense for registers.
-*)
-with mem_mode :=
-(* The location in memory immediately following the opcode. *)
-| Args : mem_mode
-(* Read two bytes from a memory location, optionally add the value in a register, and return that location in memory. *)
-| Abs : mem_mode -> option reg -> mem_mode
-(* Read a byte from a location, optionally add the value in a register, and return that location in the zero page. *)
-| Zpg :     mode -> option reg -> mem_mode.
-
-Coercion MemMode : mem_mode >-> mode.
-
-
-
-(* Next, I define the relationship between `mode`s and locations,
-and between `mem_mode`s and memory addresses. *)
-
-(* Account for the fact that zero-page addresses wrap differently than absolute addresses. *)
-Inductive addr :=
-| Word16 : bv 16 -> addr
-| Word8 : bv 8 -> addr
-.
-Definition word16_of_addr (addr : addr) : bv 16 :=
-    match addr with
-    | Word16 w => w
-    | Word8 w => bv_zero_extend 16 w
-    end.
-Definition inc_addr (a : addr) : addr :=
-    match a with
-    | Word16 w => Word16 (bv_add_Z w 1)
-    | Word8 w => Word8 (bv_add_Z w 1)
-    end.
-Definition fetch_addr s addr w := fetch s (word16_of_addr addr) w.
-Definition fetch16_addr s addr w :=
-    exists w1 w2,
-    fetch_addr s addr w1 /\
-    fetch_addr s (inc_addr addr) w2 /\
-    w = spec.bv_concat 16 w1 w2.
-
-
-Fixpoint mode_loc (s : state) (m : mode) : loc -> Prop :=
-    match m with
-    | RegMode r => fun l => l = RegLoc r
-    | MemMode m => fun l => exists addr, mem_mode_addr s m addr /\ l = MemLoc (word16_of_addr addr)
-    end
-with mem_mode_addr (s : state) (m : mem_mode) : addr -> Prop :=
-    match m with
-    | Args => fun addr => addr = Word16 (bv_add_Z (PC s) 1)
-    | Abs m r => fun addr =>
-        exists addr' w,
-        mem_mode_addr s m addr' /\
-        fetch16_addr s addr' w /\
-        addr = Word16 match r with
-        | None => w
-        | Some r => w + (bv_zero_extend 16 (Reg s r))
-        end
-    | Zpg m r => fun addr =>
-        exists l w,
-        mode_loc s m l /\
-        read s l w /\
-        addr = Word8 match r with
-        | None => w
-        | Some r => w + (Reg s r)
-        end
-    end.
-
-
-
-
-(* Lemmas: The `Word8` and `Word16` constructors for `addr` are injective *)
-Lemma Word8_inj w1 w2 : Word8 w1 = Word8 w2 -> w1 = w2.
-Proof.
-    move=> H.
-    set f := (fun a => match a with Word8 w => w = w1 | Word16 _ => False end).
-    have: f (Word8 w1) by trivial.
-    rewrite H.
-    done.
-Qed.
-Lemma Word16_inj w1 w2 : Word16 w1 = Word16 w2 -> w1 = w2.
-Proof.
-    move=> H.
-    set f := (fun a => match a with Word16 w => w = w1 | Word8 _ => False end).
-    have: f (Word16 w1) by trivial.
-    rewrite H.
-    done.
-Qed.
-
-(* Theorems relating `mem_mode`s, as defined in this file,
-to `mem_addressing_mode`s, as defined in `spec/Main.v`. *)
-Theorem immediate_mode s addr :
-    immediate s addr -> mode_loc s Args (MemLoc addr).
-Proof.
-    rewrite /immediate /mem_mode_addr.
-    move=>->.
-    by exists (Word16 (bv_add_Z (PC s) 1)).
-Qed.
-Theorem absolute_mode s addr :
-    absolute s addr -> mode_loc s (Abs Args None) (MemLoc addr).
-Proof.
-    move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
-    exists (Word16 (spec.bv_concat 16 w1 w2)).
-    split; last reflexivity.
-    exists (Word16 (bv_add_Z (PC s) 1)), (spec.bv_concat 16 w1 w2).
-    split; first reflexivity.
-    split; last reflexivity.
-    rewrite /fetch16_addr /inc_addr bv_inc_inc.
-    by exists w1, w2.
-Qed.
-Theorem absolute_x_mode s addr :
-    absolute_x s addr -> mode_loc s (Abs Args (Some X)) (MemLoc addr).
-Proof.
-    move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
-    exists (Word16 (spec.bv_concat 16 w1 w2 + bv_zero_extend 16 (Reg s X))).
-    split; last reflexivity.
-    exists (Word16 (bv_add_Z (PC s) 1)), (spec.bv_concat 16 w1 w2).
-    split; first reflexivity.
-    split; last reflexivity.
-    rewrite /fetch16_addr /inc_addr bv_inc_inc.
-    by exists w1, w2.
-Qed.
-Theorem absolute_y_mode s addr :
-    absolute_y s addr -> mode_loc s (Abs Args (Some Y)) (MemLoc addr).
-Proof.
-    move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
-    exists (Word16 (spec.bv_concat 16 w1 w2 + bv_zero_extend 16 (Reg s Y))).
-    split; last reflexivity.
-    exists (Word16 (bv_add_Z (PC s) 1)), (spec.bv_concat 16 w1 w2).
-    split; first reflexivity.
-    split; last reflexivity.
-    rewrite /fetch16_addr /inc_addr bv_inc_inc.
-    by exists w1, w2.
-Qed.
-Theorem zero_page_mode s addr :
-    zero_page s addr -> mode_loc s (Zpg Args None) (MemLoc addr).
-Proof.
-    move=> [w [fetch_w ->]].
-    rewrite /mode_loc.
-    exists (Word8 w).
-    split; last reflexivity.
-    exists (MemLoc (bv_add_Z (PC s) 1)), w.
-    split; last done.
-    by exists (Word16 (bv_add_Z (PC s) 1)).
-Qed.
-Theorem zero_page_x_mode s addr :
-    zero_page_x s addr -> mode_loc s (Zpg Args (Some X)) (MemLoc addr).
-Proof.
-    move=> [w [fetch_w ->]].
-    rewrite /mode_loc.
-    exists (Word8 (w + (Reg s X))).
-    split; last reflexivity.
-    exists (MemLoc (bv_add_Z (PC s) 1)), w.
-    split; last done.
-    by exists (Word16 (bv_add_Z (PC s) 1)).
-Qed.
-Theorem zero_page_y_mode s addr :
-    zero_page_y s addr -> mode_loc s (Zpg Args (Some Y)) (MemLoc addr).
-Proof.
-    move=> [w [fetch_w ->]].
-    rewrite /mode_loc.
-    exists (Word8 (w + (Reg s Y))).
-    split; last reflexivity.
-    exists (MemLoc (bv_add_Z (PC s) 1)), w.
-    split; last done.
-    by exists (Word16 (bv_add_Z (PC s) 1)).
-Qed.
-Theorem indirect_x_mode s addr :
-    indirect_x s addr -> mode_loc s (Abs (Zpg Args (Some X)) None) (MemLoc addr).
-Proof.
-    rewrite /indirect_x /mem_mode_addr.
-    move=> [w [w1 [w2 [fetch_w [fetch_w1 [fetch_w2 ->]]]]]].
-    exists (Word16 (spec.bv_concat 16 w1 w2)).
-    split; last reflexivity.
-    exists (Word8 (w + (Reg s X))), (spec.bv_concat 16 w1 w2).
-    split.
-    - exists (MemLoc (bv_add_Z (PC s) 1)), w.
-        split.
-        + by exists (Word16 (bv_add_Z (PC s) 1)).
-        + done.
-    - split; last reflexivity.
-        by exists w1, w2.
-Qed.
-Theorem indirect_y_mode s addr :
-    indirect_y s addr -> mode_loc s (Abs (Zpg Args None) (Some Y)) (MemLoc addr).
-Proof.
-    rewrite /indirect_y /mem_mode_addr.
-    move=> [w [w1 [w2 [fetch_w [fetch_w1 [fetch_w2 ->]]]]]].
-    rewrite /mode_loc.
-    exists (Word16 ((spec.bv_concat 16 w1 w2) + (bv_zero_extend 16 (Reg s Y)))).
-    split; last reflexivity.
-    exists (Word8 w), (spec.bv_concat 16 w1 w2).
-    split.
-    - exists (MemLoc (bv_add_Z (PC s) 1)), w.
-        split; last done.
-        by exists (Word16 (bv_add_Z (PC s) 1)).
-    - split; last reflexivity.
-        by exists w1, w2.
-Qed.
-
-
-
-
-
-(* A simplified assembly language,
-corresponding to the non-jumping instructions of the 6502. *)
-
-Inductive binop := And | Or | Xor | Add | Sub.
-Inductive bintest := Cmp | Bit.
-Inductive unop := Inc | Dec | ShiftL (roll : bool) | ShiftR (roll : bool).
-
-Inductive typical_instr :=
-| Binary : binop -> mode -> mode -> typical_instr
-| Unary : unop -> mode -> typical_instr
-| BinTest : bintest -> mode -> mode -> typical_instr
-(* The bool determined whether the N and Z flags will be set. *)
-| Mov : bool -> mode -> mode -> typical_instr
 .
 
-Inductive linear_instr :=
-| Typical : typical_instr -> linear_instr
-| SetFlag : flag -> bool -> linear_instr
+(*|
+
+------------
+Instructions
+------------
+
+Now that that's handled, what types of instructions are there?
+
+First, there's the control flow instructions;
+those where the program counter does something other than
+simply proceed to the next instruction.
+
+|*)
+
+Inductive control :=
+(* Branch if flag `f` is set to `val`. *)
+| Branch (f : flag) (val : bool)
+| Jmp
+| Jsr
+| Rts
+.
+
+
+(*|
+
+Then, there are the rest. Most of these follow a simple pattern:
+
+* Use an addressing mode to determine a location, ``l``.
+
+  Note that this might not be the addressing mode you'd expect.
+  For an operation like `ADC $0000`,
+  this is the accumulator rather than the memory address.
+
+  This is certainly a nonstandard way to think about this,
+  but it seems to work well.
+* Reads a value from `l`.
+* Does some computation with that value.
+  This may involve doing more reads, and may set the C or V flags.
+* Optionally, set the N and Z flags based on the result.
+* Optionally, write the result back to `l`.
+
+But there are also a few oddballs, like the flag-setting instructions, or ``NOP``.
+
+|*)
+
+Inductive binop := And | Or | Xor | Adc | Sbc | Cmp | Bit | Mov.
+
+Inductive operation :=
+| Binop (_ : binop) (_ : mode)
+| Inc
+| Dec
+| ShiftL (roll : bool)
+| ShiftR (roll : bool)
+.
+
+Inductive instr :=
+| Control (_ : control)
+| Typical (_ : mode) (_ : operation) (setNZ : bool)
+| SetFlag (_ : flag) (_ : bool)
 | Nop
 .
-Coercion Typical : typical_instr >-> linear_instr.
-
-(* Inductive instr :=
-| Linear : linear_instr -> instr
-| JMP : mem_mode -> instr
-| JSR : mem_mode -> instr
-| RET
-.
-Coercion Linear : linear_instr >-> instr. *)
 
 
+(*|
+=================
+Part 2: Semantics
+=================
+
+This is all well and good. But we need to explain
+what the language actually means! Otherwise it's useless.
+
+|*)
+
+From stdpp Require Import ssreflect propset unstable.bitvector.
+Local Open Scope bv_scope.
+
+(*|
+
+For ease of programming, let's specify nondeterministic operations
+as returning the set of things they might possibly output.
+
+For example, fetching a value from memory can nondeterministic.
+Sure, ROM and RAM are predictable, but address 0x0280 points to the joystick!
+
+|*)
+
+Definition fetch (s : state) (addr : bv 16) : propset (bv 8) :=
+    {[ w | fetch s addr w ]}.
+
+(*|
+
+After defining a helper for fetching 16-bit words,
+it's easy to write down the behavior of all the addressing modes.
+
+|*)
+
+Definition fetch16 (s : state) (a1 a2 : bv 16) : propset (bv 16) :=
+    w1 ← fetch s a1;
+    w2 ← fetch s a2;
+    {[ spec.bv_concat 16 w1 w2 ]}.
+
+Definition mem_mode_addr (s : state) (m : mem_mode) : propset (bv 16) :=
+    match m with
+    | Imm => {[ PC s `+Z` 1 ]}
+    | Abs r =>
+        a ← fetch16 s (PC s `+Z` 1) (PC s `+Z` 2);
+        {[ if r is Some r then a + bv_zero_extend 16 (Reg s r) else a ]}
+    | Zpg r =>
+        a ← fetch s (PC s `+Z` 1);
+        {[ bv_zero_extend 16 (if r is Some r then a + Reg s r else a) ]}
+    | XInd =>
+        a ← fetch s (PC s `+Z` 1);
+        let b := a + Reg s X in
+        fetch16 s (bv_zero_extend 16 b) (bv_zero_extend 16 (b + 1))
+    | IndY =>
+        a ← fetch s (PC s `+Z` 1);
+        b ← fetch16 s (bv_zero_extend 16 a) (bv_zero_extend 16 (a + 1));
+        {[ b + bv_zero_extend 16 (Reg s Y) ]}
+    | Rel => 
+        a ← fetch s (PC s `+Z` 1);
+        {[ (PC s `+Z` 2) + bv_sign_extend 16 a ]}
+    end.
 
 
+(* A location, either in a register or in memory. *)
+Inductive loc := RegLoc : reg -> loc | MemLoc : bv 16 -> loc.
 
-(* Compute the length of an instruction. *)
-Fixpoint mode_arg_len (l : mode) : nat :=
+Definition mode_loc (s : state) (m : mode) : propset loc :=
+    match m with
+    | RegMode r => {[ RegLoc r ]}
+    | MemMode m => MemLoc <$> mem_mode_addr s m
+    end.
+
+
+(*|
+
+Now for the instructions.
+
+Let's start with the control flow.
+
+|*)
+
+Definition run_control (ι : control) (s : state) : propset state :=
+    match ι with
+    | Branch f v =>
+        if decide (Flag s f = v)
+        then
+            addr ← mem_mode_addr s Rel;
+            {[ {|
+                PC := addr;
+                Reg := Reg s;
+                Flag := Flag s;
+                RAM := RAM s;
+            |} ]}
+        else {[ {|
+            PC := PC s `+Z` 2;
+            Reg := Reg s;
+            Flag := Flag s;
+            RAM := RAM s;
+        |} ]}
+    | Jmp =>
+        addr ← mem_mode_addr s (Abs None);
+        {[ {|
+            PC := addr;
+            Reg := Reg s;
+            Flag := Flag s;
+            RAM := RAM s;
+        |} ]}
+    | Jsr =>
+        addr ← mem_mode_addr s (Abs None);
+        {[ {|
+            PC := addr;
+            Reg := fun r =>
+                if reg_eqb r SP
+                then Reg s SP `-Z` 2
+                else Reg s r;
+            Flag := Flag s;
+            RAM :=
+                let pc := PC s `-Z` 1 in
+                write
+                    (bv_zero_extend 16 (Reg s SP `-Z` 1))
+                    (bv_extract 0 8 pc)
+                    (write
+                        (bv_zero_extend 16 (Reg s SP))
+                        (bv_extract 0 8 pc)
+                        (RAM s));
+        |} ]}
+    | Rts =>
+        addr ← fetch16 s
+            (bv_zero_extend 16 (Reg s SP `+Z` 1))
+            (bv_zero_extend 16 (Reg s SP `+Z` 2));
+        {[ {|
+            PC := addr `+Z` 1;
+            Reg := fun r =>
+                if reg_eqb r SP
+                then Reg s SP `+Z` 2
+                else Reg s r;
+            Flag := Flag s;
+            RAM := RAM s;
+        |} ]}
+    end.
+
+
+(*|
+
+For the rest of the instructions, we need to know how much space
+they take up, so we know where to find the next instruction.
+
+Fortunately, that's simple to calculate.
+The opcode itself takes one byte.
+Then any remaining bytes are inputs to the addressing mode.
+
+There is the question of which addressing mode,
+since I'm treating e.g. ``ADC $0000``
+as using both the accumulator and absolute modes.
+The answer is that one of them will always have length zero, so use the other.
+
+|*)
+
+
+(* How many bytes of input does the addressing mode take? *)
+Program Definition mode_len (l : mode) : nat :=
     match l with
     | RegMode _ => 0
-    | MemMode l =>
-        (fix help (bytes_needed : nat) (l : mem_mode) := match l with
-        | Args => bytes_needed
-        | Abs l _ => help 2%nat l
-        | Zpg l _ => mode_arg_len l
-        end) 1%nat l
-    end.
-Definition instr_arg_len (i : linear_instr) : nat :=
-    match i with
-    | Binary _ l1 l2 => Nat.max (mode_arg_len l1) (mode_arg_len l2)
-    | BinTest _ l1 l2 => Nat.max (mode_arg_len l1) (mode_arg_len l2)
-    | Unary _ l => mode_arg_len l
-    | Mov _ l1 l2 => Nat.max (mode_arg_len l1) (mode_arg_len l2)
-    | SetFlag _ _ => 0
-    | Nop => 0
+    | MemMode Imm => 1
+    | MemMode (Abs _) => 2
+    | MemMode (Zpg _) => 1
+    | MemMode XInd => 1
+    | MemMode IndY => 1
+    | MemMode Rel => 1
     end.
 
 
+(*|
 
+Next, let's tackle the typical instructions.
+We'll start with the operations.
 
-(* A definition of what it means to run an assembly instruction. *)
-Definition run_binop (op : binop) (d : bool) (w1 w2 w : bv 8) (c_in c_out : bool) : Prop :=
+|*)
+
+Definition run_binop (op : binop) (s : state)
+    (w1 w2 : bv 8) : propset ((bv 8 * bool) * bool) :=
     match op with
-    | And => w = bv_and w1 w2 /\ c_in = c_out
-    | Or  => w = bv_or  w1 w2 /\ c_in = c_out
-    | Xor => w = bv_xor w1 w2 /\ c_in = c_out
-    | Add =>
-        if d
-        then ADC_decimal_relation c_in w1 w2 w c_out
-        else (w, c_out) = spec.add_with_carry c_in w1 w2
-    | Sub =>
-        if d
-        then SBC_decimal_relation c_in w1 w2 w c_out
-        else (w, c_out) = spec.sub_with_inverted_borrow c_in w1 w2
+    | And => {[ ((bv_and w1 w2, Flag s C), Flag s V) ]}
+    | Or  => {[ ((bv_or  w1 w2, Flag s C), Flag s V) ]}
+    | Xor => {[ ((bv_xor w1 w2, Flag s C), Flag s V) ]}
+    | Adc =>
+        if Flag s D
+        then
+            v ← ⊤;
+            wc ← {[wc|ADC_decimal_relation (Flag s C) w1 w2 wc.1 wc.2]};
+            {[ (wc, v) ]}
+        else 
+            let wc := spec.add_with_carry (Flag s C) w1 w2 in
+            let v:=negb(bv_signed wc.1 =? bv_signed w1 + bv_signed w2)%Z
+            in {[ (wc, v) ]}
+    | Sbc =>
+        if Flag s D
+        then
+            v ← ⊤;
+            wc ← {[wc|SBC_decimal_relation (Flag s C) w1 w2 wc.1 wc.2]};
+            {[ (wc, v) ]}
+        else 
+            let wc := spec.sub_with_inverted_borrow (Flag s C) w1 w2 in
+            let v:=negb(bv_signed wc.1 =? bv_signed w1 - bv_signed w2)%Z
+            in {[ (wc, v) ]}
+    | Cmp => {[ (spec.sub_with_inverted_borrow true w1 w2, Flag s V) ]}
+    | Bit =>
+        let w := bv_and w1 w2 in
+        {[ ((w, Flag s C), bit 6 w) ]}
+    | Mov => {[ ((w2, Flag s C), Flag s V) ]}
     end.
 
-Definition run_bintest (test : bintest) (w1 w2 w : bv 8) (c_in c_out : bool) : Prop :=
-    match test with
-    | Bit => w = bv_and w1 w2 /\ c_in = c_out
-    | Cmp => (w, c_out) = spec.sub_with_inverted_borrow true w1 w2
+
+Definition read (s : state) (l : loc) : propset (bv 8) :=
+    match l with
+    | RegLoc r => {[ Reg s r ]}
+    | MemLoc addr => fetch s addr
     end.
 
-Definition run_unop (op : unop) (w_in w_out : bv 8) (c_in c_out : bool) : Prop :=
+Definition run_operation (op : operation) (s : state)
+    (w : bv 8) : propset ((bv 8 * bool) * bool) :=
     match op with
-    | Inc => w_out = bv_add_Z w_in 1 /\ c_out = c_in
-    | Dec => w_out = bv_sub_Z w_in 1 /\ c_out = c_in
+    | Binop op m =>
+        l ← mode_loc s m;
+        w2 ← read s l;
+        run_binop op s w w2
+    | Inc => {[ ((w `+Z` 1, Flag s C), Flag s V) ]}
+    | Dec => {[ ((w `-Z` 1, Flag s C), Flag s V) ]}
     | ShiftL roll =>
-        spec.bv_concat 9 w_out (bool_to_bv 1 c_out) =
-        spec.bv_concat 9 (bool_to_bv 1 (if roll then c_in else false)) w_in
+        let shift_in := if roll then Flag s C else false in
+        wc ←
+            {[ out
+            | spec.bv_concat 9 out.1 (bool_to_bv 1 out.2)
+            = spec.bv_concat 9 (bool_to_bv 1 shift_in) w
+            ]};
+        {[ (wc, Flag s V) ]}
     | ShiftR roll =>
-        spec.bv_concat 9 (bool_to_bv 1 c_out) w_out =
-        spec.bv_concat 9 w_in (bool_to_bv 1 (if roll then c_in else false))
+        let shift_in := if roll then Flag s C else false in
+        wc ←
+            {[ out
+            | spec.bv_concat 9 (bool_to_bv 1 out.2) out.1
+            = spec.bv_concat 9 w (bool_to_bv 1 shift_in)
+            ]};
+        {[ (wc, Flag s V) ]}
     end.
 
-Definition run_instr (i : linear_instr) (s1 s2 : state) : Prop :=
-    PC s2 = bv_add_Z (PC s1) (Z.of_nat (S (instr_arg_len i))) /\
+Definition run_instr (i : instr) (s : state) : propset state :=
     match i with
+    | Control i => run_control i s
+    | Typical m op setNZ =>
+        l ← mode_loc s m;
+        w ← read s l;
+        computed ← run_operation op s w;
+        let: ((w, c), v) := computed in
+        let len :=
+            Z.of_nat (S (Nat.max (mode_len m)
+                match op with
+                | Binop _ m' => mode_len m'
+                | _ => 0
+                end))
+        in
+        let write_back :=
+            match op with
+            | Binop (Cmp | Bit) _ => false
+            | _ => true
+            end
+        in
+        {[ {|
+            PC := PC s `+Z` len;
+            Reg :=
+                match write_back, l with
+                | true, RegLoc r => fun r' =>
+                    if reg_eqb r r' then w else Reg s r'
+                | _, _ => Reg s
+                end;
+            RAM :=
+                match write_back, l with
+                | _, MemLoc a => write a w (RAM s)
+                | _, _ => RAM s
+                end;
+            Flag := fun f =>
+                match setNZ, f with
+                | true, spec.N => bit 7 w
+                | true, spec.Z => bv_eqb w 0
+                | _, spec.C => c
+                | _, spec.V => v
+                | _, _ => Flag s f
+                end;
+        |} ]}
+    | SetFlag f val =>
+        {[ {|
+            PC := PC s `+Z` 1;
+            Reg := Reg s;
+            Flag := fun f' =>
+                if flag_eqb f f'
+                then val
+                else Flag s f';
+            RAM := RAM s;
+        |} ]}
     | Nop =>
-        Reg s2 = Reg s1 /\
-        Flag s2 = Flag s1 /\
-        RAM s2 = RAM s1
-    | SetFlag f value =>
-        Reg s2 = Reg s1 /\
-        (Flag s2 = fun f' => if flag_eqb f f' then value else Flag s1 f') /\
-        RAM s2 = RAM s1
-    | Typical i =>
-        Flag s2 D = Flag s1 D /\
-        exists computed_value : bv 8,
-        match i with
-        | Binary op m1 m2 =>
-            exists l1 l2 w1 w2,
-            mode_loc s1 m1 l1 /\
-            mode_loc s1 m2 l2 /\
-            read s1 l1 w1 /\
-            read s1 l2 w2 /\
-            run_binop op (Flag s1 D) w1 w2 computed_value (Flag s1 C) (Flag s2 C) /\
-            write s1 l1 computed_value s2
-        | BinTest test m1 m2 =>
-            exists l1 l2 w1 w2,
-            mode_loc s1 m1 l1 /\
-            mode_loc s1 m2 l2 /\
-            read s1 l1 w1 /\
-            read s1 l2 w2 /\
-            run_bintest test w1 w2 computed_value (Flag s1 C) (Flag s2 C) /\
-            Reg s2 = Reg s1 /\ RAM s2 = RAM s1
-        | Unary op m =>
-            exists l w,
-            mode_loc s1 m l /\
-            read s1 l w /\
-            run_unop op w computed_value (Flag s1 C) (Flag s2 C) /\
-            write s1 l computed_value s2
-        | Mov _ m1 m2 =>
-            exists l1 l2,
-            mode_loc s1 m1 l1 /\
-            mode_loc s1 m2 l2 /\
-            read s1 l1 computed_value /\
-            write s1 l2 computed_value s2 /\
-            Flag s1 C = Flag s2 C
-        end /\
-        match i with
-        | Mov false _ _ =>
-            Flag s2 N = Flag s1 N
-            /\ Flag s2 Z = Flag s1 Z
-        | _ =>
-            Flag s2 N = bit 7 computed_value /\
-            Flag s2 Z = bv_eqb computed_value 0x00
-        end
+        {[ {|
+            PC := PC s `+Z` 1;
+            Reg := Reg s;
+            Flag := Flag s;
+            RAM := RAM s;
+        |} ]}
     end.
 
 
-(* A function mapping opcodes to instructions. *)
-Definition parse_instr (opcode : bv 8) : option linear_instr :=
+(*|
+
+===================
+Part 3: Correctness
+===================
+
+The language is defined.
+But for this to mean anything, we need to relate it back to the 6502.
+
+To start, let's assign to each 6502 opcode its corresponding instruction in our language.
+
+|*)
+
+Local Notation Zpg0 := (Zpg None).
+Local Notation ZpgX := (Zpg (Some X)).
+Local Notation ZpgY := (Zpg (Some Y)).
+Local Notation Abs0 := (Abs None).
+Local Notation AbsX := (Abs (Some X)).
+Local Notation AbsY := (Abs (Some Y)).
+Local Notation RegA := (RegMode A).
+Local Notation RegX := (RegMode X).
+Local Notation RegY := (RegMode Y).
+
+Local Coercion MemMode : mem_mode >-> mode.
+
+Definition parse_instr (opcode : bv 8) : option instr :=
     match opcode with
+    (* ......01 *)
+    | 0x01 => Some (Typical RegA (Binop Or XInd) true)
+    | 0x05 => Some (Typical RegA (Binop Or Zpg0) true)
+    | 0x09 => Some (Typical RegA (Binop Or Imm ) true)
+    | 0x0d => Some (Typical RegA (Binop Or Abs0) true)
+    | 0x11 => Some (Typical RegA (Binop Or IndY) true)
+    | 0x15 => Some (Typical RegA (Binop Or ZpgX) true)
+    | 0x19 => Some (Typical RegA (Binop Or AbsY) true)
+    | 0x1d => Some (Typical RegA (Binop Or AbsX) true)
 
-    | 0x01 => Some (Typical (Binary  Or  (RegMode A) (Abs (Zpg Args (Some X)) None)))
-    | 0x21 => Some (Typical (Binary  And (RegMode A) (Abs (Zpg Args (Some X)) None)))
-    | 0x41 => Some (Typical (Binary  Xor (RegMode A) (Abs (Zpg Args (Some X)) None)))
-    | 0x61 => Some (Typical (Binary  Add (RegMode A) (Abs (Zpg Args (Some X)) None)))
-    | 0x81 => Some (Typical (Mov false   (RegMode A) (Abs (Zpg Args (Some X)) None)))
-    | 0xa1 => Some (Typical (Mov true    (Abs (Zpg Args (Some X)) None) (RegMode A)))
-    | 0xc1 => Some (Typical (BinTest Cmp (RegMode A) (Abs (Zpg Args (Some X)) None)))
-    | 0xe1 => Some (Typical (Binary  Sub (RegMode A) (Abs (Zpg Args (Some X)) None)))
+    | 0x21 => Some (Typical RegA (Binop And XInd) true)
+    | 0x25 => Some (Typical RegA (Binop And Zpg0) true)
+    | 0x29 => Some (Typical RegA (Binop And Imm ) true)
+    | 0x2d => Some (Typical RegA (Binop And Abs0) true)
+    | 0x31 => Some (Typical RegA (Binop And IndY) true)
+    | 0x35 => Some (Typical RegA (Binop And ZpgX) true)
+    | 0x39 => Some (Typical RegA (Binop And AbsY) true)
+    | 0x3d => Some (Typical RegA (Binop And AbsX) true)
 
-    | 0x05 => Some (Typical (Binary  Or  (RegMode A) (Zpg Args None)))
-    | 0x25 => Some (Typical (Binary  And (RegMode A) (Zpg Args None)))
-    | 0x45 => Some (Typical (Binary  Xor (RegMode A) (Zpg Args None)))
-    | 0x65 => Some (Typical (Binary  Add (RegMode A) (Zpg Args None)))
-    | 0x85 => Some (Typical (Mov false   (RegMode A) (Zpg Args None)))
-    | 0xa5 => Some (Typical (Mov true    (Zpg Args None) (RegMode A)))
-    | 0xc5 => Some (Typical (BinTest Cmp (RegMode A) (Zpg Args None)))
-    | 0xe5 => Some (Typical (Binary  Sub (RegMode A) (Zpg Args None)))
+    | 0x41 => Some (Typical RegA (Binop Xor XInd) true)
+    | 0x45 => Some (Typical RegA (Binop Xor Zpg0) true)
+    | 0x49 => Some (Typical RegA (Binop Xor Imm ) true)
+    | 0x4d => Some (Typical RegA (Binop Xor Abs0) true)
+    | 0x51 => Some (Typical RegA (Binop Xor IndY) true)
+    | 0x55 => Some (Typical RegA (Binop Xor ZpgX) true)
+    | 0x59 => Some (Typical RegA (Binop Xor AbsY) true)
+    | 0x5d => Some (Typical RegA (Binop Xor AbsX) true)
 
-    | 0x09 => Some (Typical (Binary  Or  (RegMode A) Args))
-    | 0x29 => Some (Typical (Binary  And (RegMode A) Args))
-    | 0x49 => Some (Typical (Binary  Xor (RegMode A) Args))
-    | 0x69 => Some (Typical (Binary  Add (RegMode A) Args))
-    | 0xa9 => Some (Typical (Mov true    Args (RegMode A)))
-    | 0xc9 => Some (Typical (BinTest Cmp (RegMode A) Args))
-    | 0xe9 => Some (Typical (Binary  Sub (RegMode A) Args))
+    | 0x61 => Some (Typical RegA (Binop Adc XInd) true)
+    | 0x65 => Some (Typical RegA (Binop Adc Zpg0) true)
+    | 0x69 => Some (Typical RegA (Binop Adc Imm ) true)
+    | 0x6d => Some (Typical RegA (Binop Adc Abs0) true)
+    | 0x71 => Some (Typical RegA (Binop Adc IndY) true)
+    | 0x75 => Some (Typical RegA (Binop Adc ZpgX) true)
+    | 0x79 => Some (Typical RegA (Binop Adc AbsY) true)
+    | 0x7d => Some (Typical RegA (Binop Adc AbsX) true)
 
-    | 0x0d => Some (Typical (Binary  Or  (RegMode A) (Abs Args None)))
-    | 0x2d => Some (Typical (Binary  And (RegMode A) (Abs Args None)))
-    | 0x4d => Some (Typical (Binary  Xor (RegMode A) (Abs Args None)))
-    | 0x6d => Some (Typical (Binary  Add (RegMode A) (Abs Args None)))
-    | 0x8d => Some (Typical (Mov false   (RegMode A) (Abs Args None)))
-    | 0xad => Some (Typical (Mov true    (Abs Args None) (RegMode A)))
-    | 0xcd => Some (Typical (BinTest Cmp (RegMode A) (Abs Args None)))
-    | 0xed => Some (Typical (Binary  Sub (RegMode A) (Abs Args None)))
+    | 0x81 => Some (Typical XInd (Binop Mov RegA) false)
+    | 0x85 => Some (Typical Zpg0 (Binop Mov RegA) false)
+    | 0x8d => Some (Typical Abs0 (Binop Mov RegA) false)
+    | 0x91 => Some (Typical IndY (Binop Mov RegA) false)
+    | 0x95 => Some (Typical ZpgX (Binop Mov RegA) false)
+    | 0x99 => Some (Typical AbsY (Binop Mov RegA) false)
+    | 0x9d => Some (Typical AbsX (Binop Mov RegA) false)
 
-    | 0x11 => Some (Typical (Binary  Or  (RegMode A) (Abs (Zpg Args None) (Some Y))))
-    | 0x31 => Some (Typical (Binary  And (RegMode A) (Abs (Zpg Args None) (Some Y))))
-    | 0x51 => Some (Typical (Binary  Xor (RegMode A) (Abs (Zpg Args None) (Some Y))))
-    | 0x71 => Some (Typical (Binary  Add (RegMode A) (Abs (Zpg Args None) (Some Y))))
-    | 0x91 => Some (Typical (Mov false   (RegMode A) (Abs (Zpg Args None) (Some Y))))
-    | 0xb1 => Some (Typical (Mov true    (Abs (Zpg Args None) (Some Y)) (RegMode A)))
-    | 0xd1 => Some (Typical (BinTest Cmp (RegMode A) (Abs (Zpg Args None) (Some Y))))
-    | 0xf1 => Some (Typical (Binary  Sub (RegMode A) (Abs (Zpg Args None) (Some Y))))
+    | 0xa1 => Some (Typical RegA (Binop Mov XInd) true)
+    | 0xa5 => Some (Typical RegA (Binop Mov Zpg0) true)
+    | 0xa9 => Some (Typical RegA (Binop Mov Imm ) true)
+    | 0xad => Some (Typical RegA (Binop Mov Abs0) true)
+    | 0xb1 => Some (Typical RegA (Binop Mov IndY) true)
+    | 0xb5 => Some (Typical RegA (Binop Mov ZpgX) true)
+    | 0xb9 => Some (Typical RegA (Binop Mov AbsY) true)
+    | 0xbd => Some (Typical RegA (Binop Mov AbsX) true)
 
-    | 0x15 => Some (Typical (Binary  Or  (RegMode A) (Zpg Args (Some X))))
-    | 0x35 => Some (Typical (Binary  And (RegMode A) (Zpg Args (Some X))))
-    | 0x55 => Some (Typical (Binary  Xor (RegMode A) (Zpg Args (Some X))))
-    | 0x75 => Some (Typical (Binary  Add (RegMode A) (Zpg Args (Some X))))
-    | 0x95 => Some (Typical (Mov false   (RegMode A) (Zpg Args (Some X))))
-    | 0xb5 => Some (Typical (Mov true    (Zpg Args (Some X)) (RegMode A)))
-    | 0xd5 => Some (Typical (BinTest Cmp (RegMode A) (Zpg Args (Some X))))
-    | 0xf5 => Some (Typical (Binary  Sub (RegMode A) (Zpg Args (Some X))))
+    | 0xc1 => Some (Typical RegA (Binop Cmp XInd) true)
+    | 0xc5 => Some (Typical RegA (Binop Cmp Zpg0) true)
+    | 0xc9 => Some (Typical RegA (Binop Cmp Imm ) true)
+    | 0xcd => Some (Typical RegA (Binop Cmp Abs0) true)
+    | 0xd1 => Some (Typical RegA (Binop Cmp IndY) true)
+    | 0xd5 => Some (Typical RegA (Binop Cmp ZpgX) true)
+    | 0xd9 => Some (Typical RegA (Binop Cmp AbsY) true)
+    | 0xdd => Some (Typical RegA (Binop Cmp AbsX) true)
 
-    | 0x19 => Some (Typical (Binary  Or  (RegMode A) (Abs Args (Some Y))))
-    | 0x39 => Some (Typical (Binary  And (RegMode A) (Abs Args (Some Y))))
-    | 0x59 => Some (Typical (Binary  Xor (RegMode A) (Abs Args (Some Y))))
-    | 0x79 => Some (Typical (Binary  Add (RegMode A) (Abs Args (Some Y))))
-    | 0x99 => Some (Typical (Mov false   (RegMode A) (Abs Args (Some Y))))
-    | 0xb9 => Some (Typical (Mov true    (Abs Args (Some Y)) (RegMode A)))
-    | 0xd9 => Some (Typical (BinTest Cmp (RegMode A) (Abs Args (Some Y))))
-    | 0xf9 => Some (Typical (Binary  Sub (RegMode A) (Abs Args (Some Y))))
+    | 0xe1 => Some (Typical RegA (Binop Sbc XInd) true)
+    | 0xe5 => Some (Typical RegA (Binop Sbc Zpg0) true)
+    | 0xe9 => Some (Typical RegA (Binop Sbc Imm ) true)
+    | 0xed => Some (Typical RegA (Binop Sbc Abs0) true)
+    | 0xf1 => Some (Typical RegA (Binop Sbc IndY) true)
+    | 0xf5 => Some (Typical RegA (Binop Sbc ZpgX) true)
+    | 0xf9 => Some (Typical RegA (Binop Sbc AbsY) true)
+    | 0xfd => Some (Typical RegA (Binop Sbc AbsX) true)
 
-    | 0x1d => Some (Typical (Binary  Or  (RegMode A) (Abs Args (Some X))))
-    | 0x3d => Some (Typical (Binary  And (RegMode A) (Abs Args (Some X))))
-    | 0x5d => Some (Typical (Binary  Xor (RegMode A) (Abs Args (Some X))))
-    | 0x7d => Some (Typical (Binary  Add (RegMode A) (Abs Args (Some X))))
-    | 0x9d => Some (Typical (Mov false   (RegMode A) (Abs Args (Some X))))
-    | 0xbd => Some (Typical (Mov true    (Abs Args (Some X)) (RegMode A)))
-    | 0xdd => Some (Typical (BinTest Cmp (RegMode A) (Abs Args (Some X))))
-    | 0xfd => Some (Typical (Binary  Sub (RegMode A) (Abs Args (Some X))))
+    (* ......10 *)
+    | 0x06 => Some (Typical Zpg0 (ShiftL false) true)
+    | 0x0a => Some (Typical RegA (ShiftL false) true)
+    | 0x0e => Some (Typical Abs0 (ShiftL false) true)
+    | 0x16 => Some (Typical ZpgX (ShiftL false) true)
+    | 0x1e => Some (Typical AbsX (ShiftL false) true)
 
+    | 0x26 => Some (Typical Zpg0 (ShiftL true) true)
+    | 0x2a => Some (Typical RegA (ShiftL true) true)
+    | 0x2e => Some (Typical Abs0 (ShiftL true) true)
+    | 0x36 => Some (Typical ZpgX (ShiftL true) true)
+    | 0x3e => Some (Typical AbsX (ShiftL true) true)
 
-    | 0x06 => Some (Typical (Unary (ShiftL false) (Zpg Args None)))
-    | 0x26 => Some (Typical (Unary (ShiftL true ) (Zpg Args None)))
-    | 0x46 => Some (Typical (Unary (ShiftR false) (Zpg Args None)))
-    | 0x66 => Some (Typical (Unary (ShiftR true ) (Zpg Args None)))
-    | 0x86 => Some (Typical (Mov false (RegMode X) (Zpg Args None)))
-    | 0xa6 => Some (Typical (Mov true  (Zpg Args None) (RegMode X)))
-    | 0xc6 => Some (Typical (Unary Dec            (Zpg Args None)))
-    | 0xe6 => Some (Typical (Unary Inc            (Zpg Args None)))
+    | 0x46 => Some (Typical Zpg0 (ShiftR false) true)
+    | 0x4a => Some (Typical RegA (ShiftR false) true)
+    | 0x4e => Some (Typical Abs0 (ShiftR false) true)
+    | 0x56 => Some (Typical ZpgX (ShiftR false) true)
+    | 0x5e => Some (Typical AbsX (ShiftR false) true)
 
-    | 0x0a => Some (Typical (Unary (ShiftL false) (RegMode A)))
-    | 0x2a => Some (Typical (Unary (ShiftL true ) (RegMode A)))
-    | 0x4a => Some (Typical (Unary (ShiftR false) (RegMode A)))
-    | 0x6a => Some (Typical (Unary (ShiftR true ) (RegMode A)))
-    | 0x8a => Some (Typical (Mov true  (RegMode X) (RegMode A)))
-    | 0xaa => Some (Typical (Mov true  (RegMode A) (RegMode X)))
-    | 0xca => Some (Typical (Unary Dec            (RegMode X)))
+    | 0x66 => Some (Typical Zpg0 (ShiftR true) true)
+    | 0x6a => Some (Typical RegA (ShiftR true) true)
+    | 0x6e => Some (Typical Abs0 (ShiftR true) true)
+    | 0x76 => Some (Typical ZpgX (ShiftR true) true)
+    | 0x7e => Some (Typical AbsX (ShiftR true) true)
+
+    | 0x86 => Some (Typical Zpg0 (Binop Mov RegX) false)
+    | 0x8a => Some (Typical RegA (Binop Mov RegX) true)
+    | 0x8e => Some (Typical Abs0 (Binop Mov RegX) false)
+    | 0x96 => Some (Typical ZpgY (Binop Mov RegX) false)
+    | 0x9a => Some (Typical (RegMode SP) (Binop Mov RegX) false)
+
+    | 0xa2 => Some (Typical RegX (Binop Mov Imm ) true)
+    | 0xa6 => Some (Typical RegX (Binop Mov Zpg0) true)
+    | 0xaa => Some (Typical RegX (Binop Mov RegA) true)
+    | 0xae => Some (Typical RegX (Binop Mov Abs0) true)
+    | 0xb6 => Some (Typical RegX (Binop Mov ZpgY) true)
+    | 0xba => Some (Typical RegX (Binop Mov (RegMode SP)) true)
+    | 0xbe => Some (Typical RegX (Binop Mov AbsY) true)
+
+    | 0xc6 => Some (Typical Zpg0 Dec true)
+    | 0xca => Some (Typical RegX Dec true)
+    | 0xce => Some (Typical Abs0 Dec true)
+    | 0xd6 => Some (Typical ZpgX Dec true)
+    | 0xde => Some (Typical AbsX Dec true)
+
+    | 0xe6 => Some (Typical Zpg0 Inc true)
     | 0xea => Some Nop
+    | 0xee => Some (Typical Abs0 Inc true)
+    | 0xf6 => Some (Typical ZpgX Inc true)
+    | 0xfe => Some (Typical AbsX Inc true)
 
-    | 0x0e => Some (Typical (Unary (ShiftL false) (Abs Args None)))
-    | 0x2e => Some (Typical (Unary (ShiftL true ) (Abs Args None)))
-    | 0x4e => Some (Typical (Unary (ShiftR false) (Abs Args None)))
-    | 0x6e => Some (Typical (Unary (ShiftR true ) (Abs Args None)))
-    | 0x8e => Some (Typical (Mov false (RegMode X) (Abs Args None)))
-    | 0xae => Some (Typical (Mov true  (Abs Args None) (RegMode X)))
-    | 0xce => Some (Typical (Unary Dec            (Abs Args None)))
-    | 0xee => Some (Typical (Unary Inc            (Abs Args None)))
+    (* .....100 *)
+    | 0x24 => Some (Typical RegA (Binop Bit Zpg0) true)
+    | 0x2c => Some (Typical RegA (Binop Bit Abs0) true)
 
-    | 0x16 => Some (Typical (Unary (ShiftL false) (Zpg Args (Some X))))
-    | 0x36 => Some (Typical (Unary (ShiftL true ) (Zpg Args (Some X))))
-    | 0x56 => Some (Typical (Unary (ShiftR false) (Zpg Args (Some X))))
-    | 0x76 => Some (Typical (Unary (ShiftR true ) (Zpg Args (Some X))))
-    | 0x96 => Some (Typical (Mov false (RegMode X) (Zpg Args (Some Y))))
-    | 0xb6 => Some (Typical (Mov true  (Zpg Args (Some Y)) (RegMode X)))
-    | 0xd6 => Some (Typical (Unary Dec            (Zpg Args (Some X))))
-    | 0xf6 => Some (Typical (Unary Inc            (Zpg Args (Some X))))
+    | 0x4c => Some (Control Jmp)
 
-    | 0x9a => Some (Typical (Mov false (RegMode X) (RegMode SP)))
-    | 0xba => Some (Typical (Mov true  (RegMode SP) (RegMode X)))
+    | 0x84 => Some (Typical Zpg0 (Binop Mov RegY) false)
+    | 0x8c => Some (Typical Abs0 (Binop Mov RegY) false)
+    | 0x94 => Some (Typical ZpgX (Binop Mov RegY) false)
+    | 0x98 => Some (Typical RegA (Binop Mov RegY) true)
 
-    | 0x1e => Some (Typical (Unary (ShiftL false) (Abs Args (Some X))))
-    | 0x3e => Some (Typical (Unary (ShiftL true ) (Abs Args (Some X))))
-    | 0x5e => Some (Typical (Unary (ShiftR false) (Abs Args (Some X))))
-    | 0x7e => Some (Typical (Unary (ShiftR true ) (Abs Args (Some X))))
-    | 0xbe => Some (Typical (Mov true  (Abs Args (Some Y)) (RegMode X)))
-    | 0xde => Some (Typical (Unary Dec            (Abs Args (Some X))))
-    | 0xfe => Some (Typical (Unary Inc            (Abs Args (Some X))))
+    | 0xa4 => Some (Typical RegY (Binop Mov Zpg0) true)
+    | 0xac => Some (Typical RegY (Binop Mov Abs0) true)
+    | 0xb4 => Some (Typical RegY (Binop Mov ZpgX) true)
+    | 0xbc => Some (Typical RegY (Binop Mov AbsX) true)
 
+    | 0xc4 => Some (Typical RegY (Binop Cmp Zpg0) true)
+    | 0xcc => Some (Typical RegY (Binop Cmp Abs0) true)
 
-    | 0x24 => Some (Typical (BinTest Bit (RegMode A) (Zpg Args None)))
-    | 0x84 => Some (Typical (Mov false   (RegMode Y) (Zpg Args None)))
-    | 0xa4 => Some (Typical (Mov true    (Zpg Args None) (RegMode Y)))
-    | 0xc4 => Some (Typical (BinTest Cmp (RegMode Y) (Zpg Args None)))
-    | 0xe4 => Some (Typical (BinTest Cmp (RegMode X) (Zpg Args None)))
+    | 0xe4 => Some (Typical RegX (Binop Cmp Zpg0) true)
+    | 0xec => Some (Typical RegX (Binop Cmp Abs0) true)
 
-    | 0x88 => Some (Typical (Unary   Dec (RegMode Y)))
-    | 0xa8 => Some (Typical (Mov true    (RegMode A) (RegMode Y)))
-    | 0xc8 => Some (Typical (Unary   Inc (RegMode Y)))
-    | 0xe8 => Some (Typical (Unary   Inc (RegMode X)))
+    (* ...0.000 *)
+    | 0x20 => Some (Control Jsr)
 
-    | 0x2c => Some (Typical (BinTest Bit (RegMode A) (Abs Args None)))
-    | 0x8c => Some (Typical (Mov false   (RegMode Y) (Abs Args None)))
-    | 0xac => Some (Typical (Mov true    (Abs Args None) (RegMode Y)))
-    | 0xcc => Some (Typical (BinTest Cmp (RegMode Y) (Abs Args None)))
-    | 0xec => Some (Typical (BinTest Cmp (RegMode X) (Abs Args None)))
+    | 0x60 => Some (Control Rts)
 
-    | 0x94 => Some (Typical (Mov false   (RegMode Y) (Zpg Args (Some X))))
-    | 0xb4 => Some (Typical (Mov true    (Zpg Args (Some X)) (RegMode Y)))
-    | 0x98 => Some (Typical (Mov true    (RegMode Y) (RegMode A)))
-    | 0xbc => Some (Typical (Mov true    (Abs Args (Some X)) (RegMode Y)))
+    | 0x88 => Some (Typical RegY Dec true)
 
+    | 0xa0 => Some (Typical RegY (Binop Mov Imm ) true)
+    | 0xa8 => Some (Typical RegY (Binop Mov RegA) true)
 
-    | 0x18 => Some (SetFlag C false)
-    | 0x38 => Some (SetFlag C true)
-    | 0x58 => Some (SetFlag I false)
-    | 0x78 => Some (SetFlag I true)
-    | 0xb8 => Some (SetFlag V false)
-    | 0xd8 => Some (SetFlag D false)
-    | 0xf8 => Some (SetFlag D true)
+    | 0xc0 => Some (Typical RegY (Binop Cmp Imm ) true)
+    | 0xc8 => Some (Typical RegY Inc true)
 
+    | 0xe0 => Some (Typical RegX (Binop Cmp Imm ) true)
+    | 0xe8 => Some (Typical RegX Inc true)
 
-    | 0xa2 => Some (Typical (Mov true Args (RegMode X)))
-    | 0xa0 => Some (Typical (Mov true Args (RegMode Y)))
-    | 0xc0 => Some (Typical (BinTest Cmp (RegMode Y) Args))
-    | 0xe0 => Some (Typical (BinTest Cmp (RegMode X) Args))
+    (* ...11000 *)
+    | 0x18 => Some (SetFlag spec.C false)
+    | 0x38 => Some (SetFlag spec.C true)
+    | 0x58 => Some (SetFlag spec.I false)
+    | 0x78 => Some (SetFlag spec.I true)
+    | 0xb8 => Some (SetFlag spec.V false)
+    | 0xd8 => Some (SetFlag spec.D false)
+    | 0xf8 => Some (SetFlag spec.D true)
+
+    (* ...10000 *)
+    | 0x10 => Some (Control (Branch spec.N false))
+    | 0x30 => Some (Control (Branch spec.N true))
+    | 0x50 => Some (Control (Branch spec.V false))
+    | 0x70 => Some (Control (Branch spec.V true))
+    | 0x90 => Some (Control (Branch spec.C false))
+    | 0xb0 => Some (Control (Branch spec.C true))
+    | 0xd0 => Some (Control (Branch spec.Z false))
+    | 0xf0 => Some (Control (Branch spec.Z true))
 
     | _ => None
     end.
 
 
+(*|
 
-(* Lemmas leading up to the theorem 300 lines below. *)
-Lemma run_SetFlag s1 s2 f val :
-    flag_instr s1 s2 f val ->
-    run_instr (SetFlag f val) s1 s2.
+Now, I claim if an opcode corresponds to an instruction,
+the instruction's behavior faithfully represents the opcode's.
+
+The rest of this file is a proof of this fact.
+
+|*)
+
+From Coq Require Import FunctionalExtensionality.
+
+Fact can_always_fetch s addr : exists w, w ∈ fetch s addr.
 Proof.
-    rewrite /run_instr.
+    set_unfold.
+    rewrite /spec.fetch.
+    case (bit 12 addr).
+    by eexists.
+    case (negb (bit 7 addr) || bit 9 addr).
+    by exists inhabitant.
+    by eexists.
+Qed.
+
+
+
+(* Theorems relating `mem_mode`s, as defined in this file,
+to `mem_addressing_mode`s, as defined in `spec/Main.v`. *)
+Theorem immediate_mode s addr :
+    immediate s addr -> MemLoc addr ∈ mode_loc s Imm.
+Proof.
+    move=>->.
+    eexists; split; last reflexivity.
+    reflexivity.
+Qed.
+Theorem absolute_mode s addr :
+    absolute s addr -> MemLoc addr ∈ mode_loc s Abs0.
+Proof.
+    move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
+    eexists; split; first reflexivity.
+    eexists; split; first reflexivity.
+    eexists; split; last exact fetch_w1.
+    eexists; split; last exact fetch_w2.
+    reflexivity.
+Qed.
+Theorem absolute_x_mode s addr :
+    absolute_x s addr -> MemLoc addr ∈ mode_loc s AbsX.
+Proof.
+    move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
+    eexists; split; first reflexivity.
+    eexists; split; first reflexivity.
+    eexists; split; last exact fetch_w1.
+    eexists; split; last exact fetch_w2.
+    reflexivity.
+Qed.
+Theorem absolute_y_mode s addr :
+    absolute_y s addr -> MemLoc addr ∈ mode_loc s AbsY.
+Proof.
+    move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
+    eexists; split; first reflexivity.
+    eexists; split; first reflexivity.
+    eexists; split; last exact fetch_w1.
+    eexists; split; last exact fetch_w2.
+    reflexivity.
+Qed.
+Theorem zero_page_mode s addr :
+    zero_page s addr -> MemLoc addr ∈ mode_loc s Zpg0.
+Proof.
+    move=> [w [fetch_w ->]].
+    eexists; split; first reflexivity.
+    eexists; split; first reflexivity.
+    exact fetch_w.
+Qed.
+Theorem zero_page_x_mode s addr :
+    zero_page_x s addr -> MemLoc addr ∈ mode_loc s ZpgX.
+Proof.
+    move=> [w [fetch_w ->]].
+    eexists; split; first reflexivity.
+    eexists; split; first reflexivity.
+    exact fetch_w.
+Qed.
+Theorem zero_page_y_mode s addr :
+    zero_page_y s addr -> MemLoc addr ∈ mode_loc s ZpgY.
+Proof.
+    move=> [w [fetch_w ->]].
+    eexists; split; first reflexivity.
+    eexists; split; first reflexivity.
+    exact fetch_w.
+Qed.
+Theorem indirect_x_mode s addr :
+    indirect_x s addr -> MemLoc addr ∈ mode_loc s XInd.
+Proof.
+    move=> [w [w1 [w2 [fetch_w [fetch_w1 [fetch_w2 ->]]]]]].
+    eexists; split; first reflexivity.
+    eexists; split; last exact fetch_w.
+    eexists; split; last exact fetch_w1.
+    eexists; split; last exact fetch_w2.
+    reflexivity.
+Qed.
+Theorem indirect_y_mode s addr :
+    indirect_y s addr -> MemLoc addr ∈ mode_loc s IndY.
+Proof.
+    move=> [w [w1 [w2 [fetch_w [fetch_w1 [fetch_w2 ->]]]]]].
+    eexists; split; first reflexivity.
+    eexists; split; last exact fetch_w.
+    eexists; split; first reflexivity.
+    eexists; split; last exact fetch_w1.
+    eexists; split; last exact fetch_w2.
+    reflexivity.
+Qed.
+
+
+
+
+
+Lemma run_SetFlag s1 s2 f val :
+    flag_instr s1 s2 f val -> s2 ∈ run_instr (SetFlag f val) s1.
+Proof.
+    rewrite /flag_instr.
+    destruct s2; simpl.
     by move=> [-> [-> [-> ->]]].
 Qed.
 
 Lemma run_transfer s1 s2 r1 r2 :
     transfer_instr s1 s2 r1 r2 ->
-    run_instr (Mov true (RegMode r1) (RegMode r2)) s1 s2.
+    s2 ∈ run_instr (Typical (RegMode r2) (Binop Mov (RegMode r1)) true) s1.
 Proof.
-    rewrite /run_instr /write.
+    rewrite /transfer_instr.
+    destruct s2; simpl.
     move=> [-> [-> [-> ->]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (Reg s1 r1).
-    split; last done.
-    by exists (RegLoc r1), (RegLoc r2).
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists (_,_,_); split.
+    2: {
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
+
 Lemma run_store s1 s2 r mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     store_instr s1 s2 r mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Mov false (RegMode r) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical mode' (Binop Mov (RegMode r)) false) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [/mode_spec m [-> [-> [-> ->]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (Reg s1 r).
-    split; last done.
-    by exists (RegLoc r), (MemLoc addr').
+    move=> -> H mode_spec; move: H.
+    rewrite /store_instr.
+    destruct s2; simpl.
+    move => [addr [/mode_spec m [-> [-> [-> ->]]]]].
+    eexists; split; last exact m.
+    move: (can_always_fetch s1 addr) => [? tmp];
+        eexists; split; last exact tmp.
+    eexists (_,_,_); split.
+    2: {
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    - by apply functional_extensionality; case.
+    - by case mode'.
 Qed.
+
 Lemma run_load s1 s2 r mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     load_instr s1 s2 r mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Mov true mode' (RegMode r)) s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical (RegMode r) (Binop Mov mode') true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first by rewrite /instr_arg_len PeanoNat.Nat.max_0_r.
-    split; first reflexivity.
-    exists w.
-    split; last done.
-    by exists (MemLoc addr'), (RegLoc r).
+    move=> -> H mode_spec; move: H.
+    rewrite /load_instr.
+    destruct s2; simpl.
+    move=> [addr [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists (_,_,_); split.
+    2: {
+        eexists; split; last exact m.
+        eexists; split; last exact fetch_w.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 
 Lemma run_Or s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     logic_instr s1 s2 bv_or mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Binary Or (RegMode A) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical RegA (Binop Or mode') true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_or (Reg s1 A) w).
-    split; last done.
-    by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w.
+    move=> -> H mode_spec; move: H.
+    rewrite /logic_instr.
+    destruct s2; simpl.
+    move=> [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists; split.
+    2: {
+        eexists; split; last exact m.
+        eexists; split; last exact fetch_w.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 Lemma run_And s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     logic_instr s1 s2 bv_and mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Binary And (RegMode A) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical RegA (Binop And mode') true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_and (Reg s1 A) w).
-    split; last done.
-    by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w.
+    move=> -> H mode_spec; move: H.
+    rewrite /logic_instr.
+    destruct s2; simpl.
+    move=> [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists; split.
+    2: {
+        eexists; split; last exact m.
+        eexists; split; last exact fetch_w.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 Lemma run_Xor s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     logic_instr s1 s2 bv_xor mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Binary Xor (RegMode A) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical RegA (Binop Xor mode') true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_xor (Reg s1 A) w).
-    split; last done.
-    by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w.
+    move=> -> H mode_spec; move: H.
+    rewrite /logic_instr.
+    destruct s2; simpl.
+    move=> [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists; split.
+    2: {
+        eexists; split; last exact m.
+        eexists; split; last exact fetch_w.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 Lemma run_Bit s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     BIT_mode s1 s2 mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (BinTest Bit (RegMode A) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical RegA (Binop Bit mode') true) s1.
 Proof.
-    rewrite /run_instr.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_and (Reg s1 A) w).
-    split; last done.
-    by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w.
+    move=> -> H mode_spec; move: H.
+    rewrite /BIT_mode.
+    destruct s2; simpl.
+    move=> [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists (_,_,_); split.
+    2: {
+        eexists; split; last exact m.
+        eexists; split; last exact fetch_w.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 
 
-Lemma run_Add s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+Lemma run_Adc s1 s2 mode (mode' : mem_mode) len :
+    len = Z.of_nat (S (mode_len mode')) ->
     ADC_mode s1 s2 mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Binary Add (RegMode A) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical RegA (Binop Adc mode') true) s1.
 Proof.
-    rewrite /run_instr /write.
     move=> -> H mode_spec; move: H.
 
     have [d d_def]: exists d, d = Flag s1 D by exists (Flag s1 D).
     rewrite /ADC_mode -d_def; case: d d_def => d_def.
-    - move=> [addr' [w_in [w_out [c_out [v [/mode_spec m [fetch_w_in [is_dec_add [-> [-> [-> ->]]]]]]]]]]].
-        split; first reflexivity.
-        split; first by rewrite -d_def.
-        exists w_out.
-        split; last done.
-        by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w_in.
-    - move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
+    - destruct s2; simpl.
+        move=> [addr' [w_in [w_out [c_out [v [/mode_spec m [fetch_w_in [is_dec_Adc [-> [-> [-> ->]]]]]]]]]]].
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        eexists (_,_,_); split.
+        2: {
+            eexists; split; last exact m.
+            eexists; split; last exact fetch_w_in.
+            rewrite -d_def.
+            exists v; split; last done.
+            exists (w_out,c_out); split; last exact is_dec_Adc.
+            reflexivity.
+        }
+        done.
+    - destruct s2; simpl.
+        move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
         move=> [-> [-> [-> ->]]].
-        split; first reflexivity.
-        split; first by rewrite -d_def.
-        exists (fst (spec.add_with_carry (Flag s1 C) (Reg s1 A) w_in)).
-        split; last done.
-        by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w_in.
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        eexists (_,_,_); split.
+        2: {
+            eexists; split; last exact m.
+            eexists; split; last exact fetch_w_in.
+            rewrite -d_def.
+            reflexivity.
+        }
+        done.
 Qed.
-Lemma run_Sub s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+Lemma run_Sbc s1 s2 mode (mode' : mem_mode) len :
+    len = Z.of_nat (S (mode_len mode')) ->
     SBC_mode s1 s2 mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Binary Sub (RegMode A) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical RegA (Binop Sbc mode') true) s1.
 Proof.
-    rewrite /run_instr /write.
     move=> -> H mode_spec; move: H.
 
     have [d d_def]: exists d, d = Flag s1 D by exists (Flag s1 D).
-
     rewrite /SBC_mode -d_def; case: d d_def => d_def.
-    + move=> [addr' [w_in [w_out [c_out [v [/mode_spec m [fetch_w_in [is_dec_add [-> [-> [-> ->]]]]]]]]]]].
-        split; first reflexivity.
-        split; first by rewrite -d_def.
-        exists w_out.
-        split; last done.
-        by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w_in.
-    + move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
+    - destruct s2; simpl.
+        move=> [addr' [w_in [w_out [c_out [v [/mode_spec m [fetch_w_in [is_dec_Adc [-> [-> [-> ->]]]]]]]]]]].
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        eexists (_,_,_); split.
+        2: {
+            eexists; split; last exact m.
+            eexists; split; last exact fetch_w_in.
+            rewrite -d_def.
+            exists v; split; last done.
+            exists (w_out,c_out); split; last exact is_dec_Adc.
+            reflexivity.
+        }
+        done.
+    - destruct s2; simpl.
+        move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
         move=> [-> [-> [-> ->]]].
-        split; first reflexivity.
-        split; first by rewrite -d_def.
-        exists (fst (spec.sub_with_inverted_borrow (Flag s1 C) (Reg s1 A) w_in)).
-        split; last done.
-        by exists (RegLoc A), (MemLoc addr'), (Reg s1 A), w_in.
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        eexists (_,_,_); split.
+        2: {
+            eexists; split; last exact m.
+            eexists; split; last exact fetch_w_in.
+            rewrite -d_def.
+            reflexivity.
+        }
+        done.
 Qed.
-Lemma run_Cmp s1 s2 r mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
-    CMP_mode s1 s2 r mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (BinTest Cmp (RegMode r) mode') s1 s2.
-Proof.
-    rewrite /run_instr.
 
-    move=> -> H mode_spec.
-    move: H => [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
+Lemma run_Cmp s1 s2 r mode (mode' : mem_mode) len :
+    len = Z.of_nat (S (mode_len mode')) ->
+    CMP_mode s1 s2 r mode len ->
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical (RegMode r) (Binop Cmp mode') true) s1.
+Proof.
+    move=> -> H mode_spec; move: H.
+    rewrite /CMP_mode.
+    destruct s2; simpl.
+    move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
     move=> [-> [-> [-> ->]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (fst (spec.sub_with_inverted_borrow true (Reg s1 r) w_in)).
-    split; last done.
-    by exists (RegLoc r), (MemLoc addr'), (Reg s1 r), w_in.
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists (_,_,_); split.
+    2: {
+        eexists; split; last exact m.
+        eexists; split; last exact fetch_w_in.
+        reflexivity.
+    }
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 
 
 Lemma run_Shift (right roll : bool) s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     @shift_instr_mode s1 s2
         (if right
         then (if roll then ROR_spec else LSR_spec)
         else (if roll then ROL_spec else ASL_spec))
     mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Unary ((if right then ShiftR else ShiftL) roll) mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical mode' ((if right then ShiftR else ShiftL) roll) true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w_in [c_out [w_out [/mode_spec m [fetch_w_in [is_shift [-> [-> [-> ->]]]]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists w_out.
-    split; last done.
-    exists (MemLoc addr'), w_in.
-    by move: is_shift; case right, roll.
+    move=> -> H mode_spec; move: H.
+    rewrite /shift_instr_mode.
+    destruct s2; simpl.
+    move=> [addr' [w_in [c_out [w_out [/mode_spec m [fetch_w_in [is_shift [-> [-> [-> ->]]]]]]]]]].
+    eexists; split; last exact m.
+    eexists; split; last exact fetch_w_in.
+    eexists (_,_,_); split.
+    2: {
+        rewrite /run_operation.
+        move: is_shift; case: right; case: roll; move=> is_shift;
+            (eexists; split; [reflexivity | exact is_shift]).
+    }
+    set_unfold.
+    f_equal.
+    - by rewrite Tauto.if_same.
+    - by apply functional_extensionality; case.
+    - by case mode'; case right.
+Qed.
+Lemma run_Shift_A (right roll : bool) s1 s2 :
+    @shift_instr_A s1 s2
+        (if right
+        then (if roll then ROR_spec else LSR_spec)
+        else (if roll then ROL_spec else ASL_spec)) ->
+    s2 ∈ run_instr (Typical RegA ((if right then ShiftR else ShiftL) roll) true) s1.
+Proof.
+    rewrite /shift_instr_A.
+    destruct s2; simpl.
+    move=> [addr' [w [is_shift [-> [-> [-> ->]]]]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists (_,_,_); split.
+    2: {
+        rewrite /run_operation.
+        move: is_shift; case: right; case: roll; move=> is_shift;
+            (eexists; split; [reflexivity | exact is_shift]).
+    }
+    set_unfold.
+    f_equal.
+    - move: is_shift; by case right.
+    - by apply functional_extensionality; case.
+    - by case right.
 Qed.
 
 Lemma run_Inc_mode s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     INC_mode s1 s2 mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Unary Inc mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical mode' Inc true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_add_Z w 1).
-    split; last done.
-    by exists (MemLoc addr'), w.
+    move=> -> H mode_spec; move: H.
+    rewrite /INC_mode.
+    destruct s2; simpl.
+    move=> [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last exact m.
+    eexists; split; last exact fetch_w.
+    eexists; split; last reflexivity.
+    set_unfold.
+    f_equal.
+    - by apply functional_extensionality; case.
+    - by case mode'.
 Qed.
 Lemma run_Inc_reg s1 s2 r :
     INC_reg s1 s2 r ->
-    run_instr (Unary Inc (RegMode r)) s1 s2.
+    s2 ∈ run_instr (Typical (RegMode r) Inc true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> H.
-    move: H => [-> [-> [-> ->]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_add_Z (Reg s1 r) 1).
-    split; last done.
-    by exists (RegLoc r), (Reg s1 r).
+    rewrite /INC_reg.
+    destruct s2; simpl.
+    move=> [-> [-> [-> ->]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 
 Lemma run_Dec_mode s1 s2 mode (mode' : mem_mode) len :
-    len = Z.of_nat (S (mode_arg_len mode')) ->
+    len = Z.of_nat (S (mode_len mode')) ->
     DEC_mode s1 s2 mode len ->
-    (forall addr, mode s1 addr -> mode_loc s1 mode' (MemLoc addr)) ->
-    run_instr (Unary Dec mode') s1 s2.
+    (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
+    s2 ∈ run_instr (Typical mode' Dec true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> -> H mode_spec.
-    move: H => [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_sub_Z w 1).
-    split; last done.
-    by exists (MemLoc addr'), w.
+    move=> -> H mode_spec; move: H.
+    rewrite /DEC_mode.
+    destruct s2; simpl.
+    move=> [addr' [w [/mode_spec m [fetch_w [-> [-> [-> ->]]]]]]].
+    eexists; split; last exact m.
+    eexists; split; last exact fetch_w.
+    eexists; split; last reflexivity.
+    set_unfold.
+    f_equal.
+    - by apply functional_extensionality; case.
+    - by case mode'.
 Qed.
 Lemma run_Dec_reg s1 s2 r :
     DEC_reg s1 s2 r ->
-    run_instr (Unary Dec (RegMode r)) s1 s2.
+    s2 ∈ run_instr (Typical (RegMode r) Dec true) s1.
 Proof.
-    rewrite /run_instr /write.
-    move=> H.
-    move: H => [-> [-> [-> ->]]].
-    split; first reflexivity.
-    split; first reflexivity.
-    exists (bv_sub_Z (Reg s1 r) 1).
-    split; last done.
-    by exists (RegLoc r), (Reg s1 r).
+    rewrite /DEC_reg.
+    destruct s2; simpl.
+    move=> [-> [-> [-> ->]]].
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    eexists; split; last reflexivity.
+    set_unfold.
+    f_equal.
+    by apply functional_extensionality; case.
 Qed.
 
 
+Lemma run_Branch s1 s2 f (val : bool) :
+    branch_instr s1 s2
+        (if val
+        then (fun s => Flag s f)
+        else (fun s => negb (Flag s f))) ->
+    s2 ∈ run_instr (Control (Branch f val)) s1.
+Proof.
+    rewrite /branch_instr.
+    destruct s2; simpl.
+    move=> [dist [fetch_dist [-> [-> [-> ->]]]]].
+    case (decide (spec.Flag s1 f = val)) as [eq|neq].
+    - eexists; split; first reflexivity.
+        eexists; split; last exact fetch_dist.
+        move: eq; case val; move=> ->; reflexivity.
+    - set_unfold.
+        f_equal.
+        move: neq.
+        by case val; case: (spec.Flag s1 f).
+Qed.
 
-(* The big theorem of this file. If an opcode corresponds to an assembly instruction,
-the behavior of the assembly instruction fully captures
-the possible behaviors of the machine instruction.
-*)
+From theories Require Import utils.
+
 Theorem run_instr_spec opcode :
     match parse_instr opcode with
     | None => True
-    | Some i => forall s1 s2, instruction s1 s2 opcode -> run_instr i s1 s2
+    | Some i => forall s1 s2,
+        instruction s1 s2 opcode -> s2 ∈ run_instr i s1
     end.
 Proof.
     rewrite -(bv_of_byte_of_bv opcode) bv_of_byte_speedup.
-    case (byte_of_bv opcode); simpl.
+    case (byte_of_bv opcode); set tmp := (parse_instr _); simpl in tmp; rewrite /tmp.
 
     (* 0 *)
     - trivial.
@@ -840,13 +1188,7 @@ Proof.
     - trivial.
     - trivial.
     - by intros; eapply run_Or; [reflexivity | eapply ORA_immediate | apply immediate_mode].
-    - rewrite /run_instr /write.
-         move=> s1 s2 /ASL_A H; specialize (H eq_refl); move: H => [c [w [? [-> [-> [-> ->]]]]]].
-         split; first reflexivity.
-         split; first reflexivity.
-         exists w.
-         split; last done.
-         by exists (RegLoc A), (Reg s1 A).
+    - by intros; eapply (run_Shift_A false false); eapply ASL_A.
     - trivial.
     - trivial.
     - by intros; eapply run_Or; [reflexivity | eapply ORA_absolute | apply absolute_mode].
@@ -854,7 +1196,7 @@ Proof.
     - trivial.
 
     (* 1 *)
-    - trivial.
+    - by intros; eapply run_Branch; eapply BPL.
     - by intros; eapply run_Or; [reflexivity | eapply ORA_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
@@ -872,7 +1214,12 @@ Proof.
     - trivial.
 
     (* 2 *)
-    - trivial.
+    - move=> s1 [? ? ? ?] /JSR H; specialize (H eq_refl); simpl in H; move: H => [pc [/absolute_mode [? [eq m]] [-> [-> [-> ->]]]]].
+        eexists; split; last exact m.
+        set_unfold.
+        f_equal.
+        + by apply functional_extensionality; case.
+        + by inversion eq.
     - by intros; eapply run_And; [reflexivity | eapply AND_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
@@ -882,13 +1229,7 @@ Proof.
     - trivial.
     - trivial.
     - by intros; eapply run_And; [reflexivity | eapply AND_immediate | apply immediate_mode].
-    - rewrite /run_instr /write.
-         move=> s1 s2 /ROL_A H; specialize (H eq_refl); move: H => [c [w [? [-> [-> [-> ->]]]]]].
-         split; first reflexivity.
-         split; first reflexivity.
-         exists w.
-         split; last done.
-         by exists (RegLoc A), (Reg s1 A).
+    - by intros; eapply (run_Shift_A false true); eapply ROL_A.
     - trivial.
     - by intros; eapply run_Bit; [reflexivity | eapply BIT_absolute | apply absolute_mode].
     - by intros; eapply run_And; [reflexivity | eapply AND_absolute | apply absolute_mode].
@@ -896,7 +1237,7 @@ Proof.
     - trivial.
 
     (* 3 *)
-    - trivial.
+    - by intros; eapply run_Branch; eapply BMI.
     - by intros; eapply run_And; [reflexivity | eapply AND_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
@@ -924,21 +1265,18 @@ Proof.
     - trivial.
     - trivial.
     - by intros; eapply run_Xor; [reflexivity | eapply EOR_immediate | apply immediate_mode].
-    - rewrite /run_instr /write.
-         move=> s1 s2 /LSR_A H; specialize (H eq_refl); move: H => [c [w [? [-> [-> [-> ->]]]]]].
-         split; first reflexivity.
-         split; first reflexivity.
-         exists w.
-         split; last done.
-         by exists (RegLoc A), (Reg s1 A).
+    - by intros; eapply (run_Shift_A true false); eapply LSR_A.
     - trivial.
-    - trivial.
+    - move=> s1 [? ? ? ?] /JMP H; specialize (H eq_refl); simpl in H; move: H => [pc [/absolute_mode [? [eq m]] [-> [-> [-> ->]]]]].
+        eexists; split; last exact m.
+        inversion eq.
+        reflexivity.
     - by intros; eapply run_Xor; [reflexivity | eapply EOR_absolute | apply absolute_mode].
     - by intros; eapply (run_Shift true false); [reflexivity | eapply LSR_absolute | apply absolute_mode].
     - trivial.
 
     (* 5 *)
-    - trivial.
+    - by intros; eapply run_Branch; eapply BVC.
     - by intros; eapply run_Xor; [reflexivity | eapply EOR_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
@@ -956,44 +1294,47 @@ Proof.
     - trivial.
 
     (* 6 *)
+    - move=> s1 [? ? ? ?] /RTS H; specialize (H eq_refl); simpl in H; move: H => [w1 [w2 [fetch_w1 [fetch_w2 [-> [-> [-> ->]]]]]]].
+        eexists; split.
+        2: {
+            eexists; split; last exact fetch_w1.
+            eexists; split; last exact fetch_w2.
+            reflexivity.
+        }
+        set_unfold.
+        f_equal.
+        by apply functional_extensionality; case.
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_indirect_x | apply indirect_x_mode].
     - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
-    - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_zero_page | apply zero_page_mode].
     - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_zero_page | apply zero_page_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_immediate | apply immediate_mode].
-    - rewrite /run_instr /write.
-         move=> s1 s2 /ROR_A H; specialize (H eq_refl); move: H => [c [w [? [-> [-> [-> ->]]]]]].
-         split; first reflexivity.
-         split; first reflexivity.
-         exists w.
-         split; last done.
-         by exists (RegLoc A), (Reg s1 A).
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_immediate | apply immediate_mode].
+    - by intros; eapply (run_Shift_A true true); eapply ROR_A.
     - trivial.
     - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_absolute | apply absolute_mode].
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_absolute | apply absolute_mode].
     - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_absolute | apply absolute_mode].
     - trivial.
 
     (* 7 *)
+    - by intros; eapply run_Branch; eapply BVS.
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_indirect_y | apply indirect_y_mode].
     - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
-    - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_zero_page_x | apply zero_page_x_mode].
     - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply SEI.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Add; [reflexivity | eapply ADC_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Adc; [reflexivity | eapply ADC_absolute_x | apply absolute_x_mode].
     - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_absolute_x | apply absolute_x_mode].
     - trivial.
 
@@ -1016,7 +1357,7 @@ Proof.
     - trivial.
 
     (* 9 *)
-    - trivial.
+    - by intros; eapply run_Branch; eapply BCC.
     - by intros; eapply run_store; [reflexivity | eapply STA_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
@@ -1026,13 +1367,18 @@ Proof.
     - trivial.
     - by intros; eapply run_transfer; eapply TYA.
     - by intros; eapply run_store; [reflexivity | eapply STA_absolute_y | apply absolute_y_mode].
-    - rewrite /run_instr /write.
-        move=> s1 s2 /TXS H; specialize (H eq_refl); move: H => [-> [-> [-> ->]]].
-        split; first reflexivity.
-        split; first reflexivity.
-        exists (Reg s1 X).
-        split; last done.
-        by exists (RegLoc X), (RegLoc SP).
+    - move=> s1 [? ? ? ?] /TXS H; specialize (H eq_refl); simpl in H; move: H => [-> [-> [-> ->]]].
+        eexists; split; last reflexivity.
+        eexists; split; last reflexivity.
+        eexists (_,_,_); split.
+        2: {
+            eexists; split; last reflexivity.
+            eexists; split; last reflexivity.
+            reflexivity.
+        }
+        set_unfold.
+        f_equal.
+        by apply functional_extensionality; case.
     - trivial.
     - trivial.
     - by intros; eapply run_store; [reflexivity | eapply STA_absolute_x | apply absolute_x_mode].
@@ -1058,7 +1404,7 @@ Proof.
     - trivial.
 
     (* B *)
-    - trivial.
+    - by intros; eapply run_Branch; eapply BCS.
     - by intros; eapply run_load; [reflexivity | eapply LDA_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
@@ -1094,7 +1440,7 @@ Proof.
     - trivial.
 
     (* D *)
-    - trivial.
+    - by intros; eapply run_Branch; eapply BNE.
     - by intros; eapply run_Cmp; [reflexivity | eapply CMP_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
@@ -1113,45 +1459,44 @@ Proof.
 
     (* E *)
     - by intros; eapply run_Cmp; [reflexivity | eapply CPX_immediate | apply immediate_mode].
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
     - by intros; eapply run_Cmp; [reflexivity | eapply CPX_zero_page | apply zero_page_mode].
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_zero_page | apply zero_page_mode].
     - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_zero_page | apply zero_page_mode].
     - trivial.
     - by intros; eapply run_Inc_reg; eapply INX.
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_immediate | apply immediate_mode].
-    - rewrite /run_instr.
-        by move=> s1 s2 /NOP => H; specialize (H eq_refl); move: H => [-> [-> [-> ->]]].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_immediate | apply immediate_mode].
+    - by move=> s1 [? ? ? ?] /NOP => H; specialize (H eq_refl); simpl in H; move: H => [-> [-> [-> ->]]].
     - trivial.
     - by intros; eapply run_Cmp; [reflexivity | eapply CPX_absolute | apply absolute_mode].
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_absolute | apply absolute_mode].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_absolute | apply absolute_mode].
     - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_absolute | apply absolute_mode].
     - trivial.
 
     (* F *)
+    - by intros; eapply run_Branch; eapply BEQ.
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_indirect_y | apply indirect_y_mode].
     - trivial.
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
-    - trivial.
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_zero_page_x | apply zero_page_x_mode].
     - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply SED.
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Sub; [reflexivity | eapply SBC_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_absolute_x | apply absolute_x_mode].
     - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_absolute_x | apply absolute_x_mode].
     - trivial.
 Qed.
 
-(* Thus the machine language has been (mostly) upgraded to an assembly language.
+(* Thus the machine language has been upgraded to an assembly language.
 The benefits are as follows:
-- No longer do I have to deal with 256 possible opcodes.
+- No longer do I have to deal with a hundred plus opcodes.
     The assembly instruction set, while not trivial, is a lot smaller.
 - Control flow is decoupled from program behavior;
     it is trivial to extract the next PC value from `run_instr`.

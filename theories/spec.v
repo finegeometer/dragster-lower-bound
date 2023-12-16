@@ -494,9 +494,9 @@ Definition ADC_mode mode mode_len :=
             | N => bit 7 w_out
             | Z => bv_eqb w_out 0x00
             | C => c
-            | V =>
-                negb (Bool.eqb (bit 7 w_out) (bit 7 (Reg s1 A))) &&
-                negb (Bool.eqb (bit 7 w_out) (bit 7 w_in))
+            | V => negb
+                (bv_signed w_out =?
+                    bv_signed (Reg s1 A) + bv_signed w_in)%Z
             | _ => Flag s1 f
             end) /\
         RAM s2 = RAM s1.
@@ -538,9 +538,9 @@ Definition SBC_mode mode mode_len :=
             | N => bit 7 w_out
             | Z => bv_eqb w_out 0x00
             | C => c
-            | V =>
-                negb (Bool.eqb (bit 7 w_out) (bit 7 (Reg s1 A))) &&
-                negb (Bool.eqb (bit 7 w_out) (bit 7 w_in))
+            | V => negb
+                (bv_signed w_out =?
+                    bv_signed (Reg s1 A) - bv_signed w_in)%Z
             | _ => Flag s1 f
             end) /\
         RAM s2 = RAM s1.
@@ -572,20 +572,12 @@ Record instruction (op : bv 8) : Prop := {
     CLD : op = 0xd8 -> flag_instr D false;
     SED : op = 0xf8 -> flag_instr D true;
 
-    RTS : op = 0x60 -> exists w1 w2,
-        fetch s1 (bv_zero_extend 16 (Reg s1 SP `+Z` 1)) w1 /\
-        fetch s2 (bv_zero_extend 16 (Reg s1 SP `+Z` 2)) w2 /\
-        PC s2 = bv_concat 16 w1 w2 `+Z` 1 /\
-        Reg s2 = Reg s1 /\
-        Flag s2 = Flag s1 /\
-        RAM s2 = RAM s1;
-
     BPL : op = 0x10 -> branch_instr (fun s => negb (Flag s N));
     BMI : op = 0x30 -> branch_instr (fun s =>      (Flag s N));
     BVC : op = 0x50 -> branch_instr (fun s => negb (Flag s V));
     BVS : op = 0x70 -> branch_instr (fun s =>      (Flag s V));
-    BCC : op = 0x90 -> branch_instr (fun s => negb (Flag s N));
-    BCS : op = 0xb0 -> branch_instr (fun s =>      (Flag s N));
+    BCC : op = 0x90 -> branch_instr (fun s => negb (Flag s C));
+    BCS : op = 0xb0 -> branch_instr (fun s =>      (Flag s C));
     BNE : op = 0xd0 -> branch_instr (fun s => negb (Flag s Z));
     BEQ : op = 0xf0 -> branch_instr (fun s =>      (Flag s Z));
 
@@ -741,6 +733,15 @@ Record instruction (op : bv 8) : Prop := {
                     (bv_zero_extend 16 (Reg s1 SP))
                     (bv_extract 0 8 pc)
                     (RAM s1));
+
+    RTS : op = 0x60 -> exists w1 w2,
+        fetch s1 (bv_zero_extend 16 (Reg s1 SP `+Z` 1)) w1 /\
+        fetch s1 (bv_zero_extend 16 (Reg s1 SP `+Z` 2)) w2 /\
+        PC s2 = bv_concat 16 w1 w2 `+Z` 1 /\
+        Reg s2 = setReg SP (bv_add_Z (Reg s1 SP) 2) /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1;
+
 }.
 
 Definition step : Prop :=
