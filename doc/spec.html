@@ -431,9 +431,9 @@ This is that list. Everything above that is helper functions for defining the re
             | N =&gt; bit <span class="mi">7</span> w_out
             | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
             | C =&gt; c
-            | V =&gt;
-                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> (Reg s1 A))) &amp;&amp;
-                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> w_in))
+            | V =&gt; negb
+                (bv_signed w_out =?
+                    bv_signed (Reg s1 A) + bv_signed w_in)%Z
             | _ =&gt; Flag s1 f
             <span class="kr">end</span>) /\
         RAM s2 = RAM s1.</span><span class="alectryon-wsp">
@@ -475,9 +475,9 @@ This is that list. Everything above that is helper functions for defining the re
             | N =&gt; bit <span class="mi">7</span> w_out
             | Z =&gt; bv_eqb w_out <span class="mi">0</span>x00
             | C =&gt; c
-            | V =&gt;
-                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> (Reg s1 A))) &amp;&amp;
-                negb (Bool.eqb (bit <span class="mi">7</span> w_out) (bit <span class="mi">7</span> w_in))
+            | V =&gt; negb
+                (bv_signed w_out =?
+                    bv_signed (Reg s1 A) - bv_signed w_in)%Z
             | _ =&gt; Flag s1 f
             <span class="kr">end</span>) /\
         RAM s2 = RAM s1.</span><span class="alectryon-wsp">
@@ -509,20 +509,12 @@ This is that list. Everything above that is helper functions for defining the re
     CLD : op = <span class="mi">0</span>xd8 -&gt; flag_instr D false;
     SED : op = <span class="mi">0</span>xf8 -&gt; flag_instr D true;
 
-    RTS : op = <span class="mi">0</span>x60 -&gt; <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
-        fetch s1 (bv_zero_extend <span class="mi">16</span> (Reg s1 SP `+Z` <span class="mi">1</span>)) w1 /\
-        fetch s2 (bv_zero_extend <span class="mi">16</span> (Reg s1 SP `+Z` <span class="mi">2</span>)) w2 /\
-        PC s2 = bv_concat <span class="mi">16</span> w1 w2 `+Z` <span class="mi">1</span> /\
-        Reg s2 = Reg s1 /\
-        Flag s2 = Flag s1 /\
-        RAM s2 = RAM s1;
-
     BPL : op = <span class="mi">0</span>x10 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s N));
     BMI : op = <span class="mi">0</span>x30 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s N));
     BVC : op = <span class="mi">0</span>x50 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s V));
     BVS : op = <span class="mi">0</span>x70 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s V));
-    BCC : op = <span class="mi">0</span>x90 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s N));
-    BCS : op = <span class="mi">0</span>xb0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s N));
+    BCC : op = <span class="mi">0</span>x90 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s C));
+    BCS : op = <span class="mi">0</span>xb0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s C));
     BNE : op = <span class="mi">0</span>xd0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt; negb (Flag s Z));
     BEQ : op = <span class="mi">0</span>xf0 -&gt; branch_instr (<span class="kr">fun</span> <span class="nv">s</span> =&gt;      (Flag s Z));
 
@@ -678,6 +670,15 @@ This is that list. Everything above that is helper functions for defining the re
                     (bv_zero_extend <span class="mi">16</span> (Reg s1 SP))
                     (bv_extract <span class="mi">0</span> <span class="mi">8</span> pc)
                     (RAM s1));
+
+    RTS : op = <span class="mi">0</span>x60 -&gt; <span class="kr">exists</span> <span class="nv">w1</span> <span class="nv">w2</span>,
+        fetch s1 (bv_zero_extend <span class="mi">16</span> (Reg s1 SP `+Z` <span class="mi">1</span>)) w1 /\
+        fetch s1 (bv_zero_extend <span class="mi">16</span> (Reg s1 SP `+Z` <span class="mi">2</span>)) w2 /\
+        PC s2 = bv_concat <span class="mi">16</span> w1 w2 `+Z` <span class="mi">1</span> /\
+        Reg s2 = setReg SP (bv_add_Z (Reg s1 SP) <span class="mi">2</span>) /\
+        Flag s2 = Flag s1 /\
+        RAM s2 = RAM s1;
+
 }.</span><span class="alectryon-wsp">
 </span></span><span class="alectryon-wsp">
 </span><span class="alectryon-sentence"><span class="alectryon-input"><span class="kn">Definition</span> <span class="nf">step</span> : <span class="kt">Prop</span> :=

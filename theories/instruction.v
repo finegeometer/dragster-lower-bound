@@ -24,7 +24,7 @@ From theories Require Import spec.
 (*|
 
 ----------------
-addressing Modes
+Addressing Modes
 ----------------
 
 A hundred and thirty opcodes sounds scary.
@@ -50,9 +50,8 @@ But an addressing mode can also pick out a register.
 
 Only one addressing mode actually does this: the "Accumulator" mode.
 Except that isn't entirely true.
-Instructions like ``INX`` and ``INY``, or ``TXA`` and ``TYA``,
-technically don't use an addressing mode.
-But it's simpler to think of them as addressing the `X` and `Y` registers!
+While instructions like ``INX`` and ``INY`` technically don't use an addressing mode,
+it's simpler to think of them as addressing the `X` and `Y` registers.
 
 So I'll say there's an addressing mode for each register.
 
@@ -84,7 +83,6 @@ Inductive control :=
 | Jsr
 | Rts
 .
-
 
 (*|
 
@@ -132,7 +130,7 @@ Part 2: Semantics
 =================
 
 This is all well and good. But we need to explain
-what the language actually means! Otherwise it's useless.
+what the instructiond actually mean! Otherwise it's useless.
 
 |*)
 
@@ -155,7 +153,7 @@ Definition fetch (s : state) (addr : bv 16) : propset (bv 8) :=
 (*|
 
 After defining a helper for fetching 16-bit words,
-it's easy to write down the behavior of all the addressing modes.
+it's easy to write down the behavior of all the memory addressing modes.
 
 |*)
 
@@ -186,8 +184,12 @@ Definition mem_mode_addr (s : state) (m : mem_mode) : propset (bv 16) :=
         {[ (PC s `+Z` 2) + bv_sign_extend 16 a ]}
     end.
 
+(*|
 
-(* A location, either in a register or in memory. *)
+General addressing modes are no harder; we just need the concept of a location that's either in a register or in memory.
+
+|*)
+
 Inductive loc := RegLoc : reg -> loc | MemLoc : bv 16 -> loc.
 
 Definition mode_loc (s : state) (m : mode) : propset loc :=
@@ -276,7 +278,7 @@ The opcode itself takes one byte.
 Then any remaining bytes are inputs to the addressing mode.
 
 There is the question of which addressing mode,
-since I'm treating e.g. ``ADC $0000``
+since I'm nonstandardly treating e.g. ``ADC $0000``
 as using both the accumulator and absolute modes.
 The answer is that one of them will always have length zero, so use the other.
 
@@ -370,9 +372,35 @@ Definition run_operation (op : operation) (s : state)
         {[ (wc, Flag s V) ]}
     end.
 
+(*|
+
+Finally, we implement ``run_instr``, which specifies exactly what it means to run an instruction.
+* Control instructions were implemented above.
+* SetFlag and Nop are simple.
+* For typical instructions, this is rather long, but should mirror the descriptions I gave in Part 1.
+
+|*)
+
 Definition run_instr (i : instr) (s : state) : propset state :=
     match i with
     | Control i => run_control i s
+    | SetFlag f val =>
+        {[ {|
+            PC := PC s `+Z` 1;
+            Reg := Reg s;
+            Flag := fun f' =>
+                if flag_eqb f f'
+                then val
+                else Flag s f';
+            RAM := RAM s;
+        |} ]}
+    | Nop =>
+        {[ {|
+            PC := PC s `+Z` 1;
+            Reg := Reg s;
+            Flag := Flag s;
+            RAM := RAM s;
+        |} ]}
     | Typical m op setNZ =>
         l ← mode_loc s m;
         w ← read s l;
@@ -413,23 +441,6 @@ Definition run_instr (i : instr) (s : state) : propset state :=
                 | _, _ => Flag s f
                 end;
         |} ]}
-    | SetFlag f val =>
-        {[ {|
-            PC := PC s `+Z` 1;
-            Reg := Reg s;
-            Flag := fun f' =>
-                if flag_eqb f f'
-                then val
-                else Flag s f';
-            RAM := RAM s;
-        |} ]}
-    | Nop =>
-        {[ {|
-            PC := PC s `+Z` 1;
-            Reg := Reg s;
-            Flag := Flag s;
-            RAM := RAM s;
-        |} ]}
     end.
 
 
@@ -439,10 +450,10 @@ Definition run_instr (i : instr) (s : state) : propset state :=
 Part 3: Correctness
 ===================
 
-The language is defined.
+The language has been defined.
 But for this to mean anything, we need to relate it back to the 6502.
 
-To start, let's assign to each 6502 opcode its corresponding instruction in our language.
+To start, let's assign to each (valid) 6502 opcode its corresponding instruction in our language.
 
 |*)
 
@@ -649,7 +660,25 @@ Definition parse_instr (opcode : bv 8) : option instr :=
 Now, I claim if an opcode corresponds to an instruction,
 the instruction's behavior faithfully represents the opcode's.
 
-The rest of this file is a proof of this fact.
+|*)
+
+Definition run_instr_claim : Prop :=
+    forall opcode,
+    match parse_instr opcode with
+    | None => True
+    | Some i => forall s1 s2,
+        instruction s1 s2 opcode -> s2 ∈ run_instr i s1
+    end.
+
+(*|
+
+The last thousand lines of this file is a proof of this fact.
+
+------
+Lemmas
+------
+
+Before proving the theorem, it helps to prove a large number of lemmas.
 
 |*)
 
@@ -666,19 +695,23 @@ Proof.
     by eexists.
 Qed.
 
+(*|
 
+Both the language and spec use the concept of addressing mode, though in different ways.
 
-(* Theorems relating `mem_mode`s, as defined in this file,
-to `mem_addressing_mode`s, as defined in `spec/Main.v`. *)
-Theorem immediate_mode s addr :
-    immediate s addr -> MemLoc addr ∈ mode_loc s Imm.
+The following series of lemmas relates the two.
+
+|*)
+
+Lemma immediate_mode s addr :
+    spec.immediate s addr -> MemLoc addr ∈ mode_loc s Imm.
 Proof.
     move=>->.
     eexists; split; last reflexivity.
     reflexivity.
 Qed.
-Theorem absolute_mode s addr :
-    absolute s addr -> MemLoc addr ∈ mode_loc s Abs0.
+Lemma absolute_mode s addr :
+    spec.absolute s addr -> MemLoc addr ∈ mode_loc s Abs0.
 Proof.
     move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
     eexists; split; first reflexivity.
@@ -687,8 +720,8 @@ Proof.
     eexists; split; last exact fetch_w2.
     reflexivity.
 Qed.
-Theorem absolute_x_mode s addr :
-    absolute_x s addr -> MemLoc addr ∈ mode_loc s AbsX.
+Lemma absolute_x_mode s addr :
+    spec.absolute_x s addr -> MemLoc addr ∈ mode_loc s AbsX.
 Proof.
     move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
     eexists; split; first reflexivity.
@@ -697,8 +730,8 @@ Proof.
     eexists; split; last exact fetch_w2.
     reflexivity.
 Qed.
-Theorem absolute_y_mode s addr :
-    absolute_y s addr -> MemLoc addr ∈ mode_loc s AbsY.
+Lemma absolute_y_mode s addr :
+    spec.absolute_y s addr -> MemLoc addr ∈ mode_loc s AbsY.
 Proof.
     move=> [w1 [w2 [fetch_w1 [fetch_w2 ->]]]].
     eexists; split; first reflexivity.
@@ -707,32 +740,32 @@ Proof.
     eexists; split; last exact fetch_w2.
     reflexivity.
 Qed.
-Theorem zero_page_mode s addr :
-    zero_page s addr -> MemLoc addr ∈ mode_loc s Zpg0.
+Lemma zero_page_mode s addr :
+    spec.zero_page s addr -> MemLoc addr ∈ mode_loc s Zpg0.
 Proof.
     move=> [w [fetch_w ->]].
     eexists; split; first reflexivity.
     eexists; split; first reflexivity.
     exact fetch_w.
 Qed.
-Theorem zero_page_x_mode s addr :
-    zero_page_x s addr -> MemLoc addr ∈ mode_loc s ZpgX.
+Lemma zero_page_x_mode s addr :
+    spec.zero_page_x s addr -> MemLoc addr ∈ mode_loc s ZpgX.
 Proof.
     move=> [w [fetch_w ->]].
     eexists; split; first reflexivity.
     eexists; split; first reflexivity.
     exact fetch_w.
 Qed.
-Theorem zero_page_y_mode s addr :
-    zero_page_y s addr -> MemLoc addr ∈ mode_loc s ZpgY.
+Lemma zero_page_y_mode s addr :
+    spec.zero_page_y s addr -> MemLoc addr ∈ mode_loc s ZpgY.
 Proof.
     move=> [w [fetch_w ->]].
     eexists; split; first reflexivity.
     eexists; split; first reflexivity.
     exact fetch_w.
 Qed.
-Theorem indirect_x_mode s addr :
-    indirect_x s addr -> MemLoc addr ∈ mode_loc s XInd.
+Lemma indirect_x_mode s addr :
+    spec.indirect_x s addr -> MemLoc addr ∈ mode_loc s XInd.
 Proof.
     move=> [w [w1 [w2 [fetch_w [fetch_w1 [fetch_w2 ->]]]]]].
     eexists; split; first reflexivity.
@@ -741,8 +774,8 @@ Proof.
     eexists; split; last exact fetch_w2.
     reflexivity.
 Qed.
-Theorem indirect_y_mode s addr :
-    indirect_y s addr -> MemLoc addr ∈ mode_loc s IndY.
+Lemma indirect_y_mode s addr :
+    spec.indirect_y s addr -> MemLoc addr ∈ mode_loc s IndY.
 Proof.
     move=> [w [w1 [w2 [fetch_w [fetch_w1 [fetch_w2 ->]]]]]].
     eexists; split; first reflexivity.
@@ -753,12 +786,15 @@ Proof.
     reflexivity.
 Qed.
 
+(*|
 
+``spec.v`` defines a lot of helper functions, which help specify the behavior of certain groups of instructions.
+The following sequence of lemmas relates each of them to the corresponding concept in the language.
 
-
+|*)
 
 Lemma run_SetFlag s1 s2 f val :
-    flag_instr s1 s2 f val -> s2 ∈ run_instr (SetFlag f val) s1.
+    spec.flag_instr s1 s2 f val -> s2 ∈ run_instr (SetFlag f val) s1.
 Proof.
     rewrite /flag_instr.
     destruct s2; simpl.
@@ -766,8 +802,10 @@ Proof.
 Qed.
 
 Lemma run_transfer s1 s2 r1 r2 :
-    transfer_instr s1 s2 r1 r2 ->
-    s2 ∈ run_instr (Typical (RegMode r2) (Binop Mov (RegMode r1)) true) s1.
+    spec.transfer_instr s1 s2 r1 r2 ->
+    s2 ∈ run_instr
+        (Typical (RegMode r2) (Binop Mov (RegMode r1)) true)
+        s1.
 Proof.
     rewrite /transfer_instr.
     destruct s2; simpl.
@@ -785,9 +823,10 @@ Proof.
     by apply functional_extensionality; case.
 Qed.
 
-Lemma run_store s1 s2 r mode (mode' : mem_mode) len :
+Lemma run_store s1 s2 r
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    store_instr s1 s2 r mode len ->
+    spec.store_instr s1 s2 r mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical mode' (Binop Mov (RegMode r)) false) s1.
 Proof.
@@ -810,9 +849,10 @@ Proof.
     - by case mode'.
 Qed.
 
-Lemma run_load s1 s2 r mode (mode' : mem_mode) len :
+Lemma run_load s1 s2 r
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    load_instr s1 s2 r mode len ->
+    spec.load_instr s1 s2 r mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical (RegMode r) (Binop Mov mode') true) s1.
 Proof.
@@ -833,9 +873,10 @@ Proof.
     by apply functional_extensionality; case.
 Qed.
 
-Lemma run_Or s1 s2 mode (mode' : mem_mode) len :
+Lemma run_Or s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    logic_instr s1 s2 bv_or mode len ->
+    spec.logic_instr s1 s2 bv_or mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical RegA (Binop Or mode') true) s1.
 Proof.
@@ -855,9 +896,11 @@ Proof.
     f_equal.
     by apply functional_extensionality; case.
 Qed.
-Lemma run_And s1 s2 mode (mode' : mem_mode) len :
+
+Lemma run_And s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    logic_instr s1 s2 bv_and mode len ->
+    spec.logic_instr s1 s2 bv_and mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical RegA (Binop And mode') true) s1.
 Proof.
@@ -877,9 +920,11 @@ Proof.
     f_equal.
     by apply functional_extensionality; case.
 Qed.
-Lemma run_Xor s1 s2 mode (mode' : mem_mode) len :
+
+Lemma run_Xor s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    logic_instr s1 s2 bv_xor mode len ->
+    spec.logic_instr s1 s2 bv_xor mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical RegA (Binop Xor mode') true) s1.
 Proof.
@@ -899,9 +944,10 @@ Proof.
     f_equal.
     by apply functional_extensionality; case.
 Qed.
-Lemma run_Bit s1 s2 mode (mode' : mem_mode) len :
+Lemma run_Bit s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    BIT_mode s1 s2 mode len ->
+    spec.BIT_mode s1 s2 mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical RegA (Binop Bit mode') true) s1.
 Proof.
@@ -922,10 +968,10 @@ Proof.
     by apply functional_extensionality; case.
 Qed.
 
-
-Lemma run_Adc s1 s2 mode (mode' : mem_mode) len :
+Lemma run_Adc s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    ADC_mode s1 s2 mode len ->
+    spec.ADC_mode s1 s2 mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical RegA (Binop Adc mode') true) s1.
 Proof.
@@ -934,7 +980,10 @@ Proof.
     have [d d_def]: exists d, d = Flag s1 D by exists (Flag s1 D).
     rewrite /ADC_mode -d_def; case: d d_def => d_def.
     - destruct s2; simpl.
-        move=> [addr' [w_in [w_out [c_out [v [/mode_spec m [fetch_w_in [is_dec_Adc [-> [-> [-> ->]]]]]]]]]]].
+        move=>
+            [addr' [w_in [w_out [c_out
+                [v [/mode_spec m [fetch_w_in [is_dec_Adc
+                    [-> [-> [-> ->]]]]]]]]]]].
         eexists; split; last reflexivity.
         eexists; split; last reflexivity.
         eexists (_,_,_); split.
@@ -948,7 +997,7 @@ Proof.
         }
         done.
     - destruct s2; simpl.
-        move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
+        move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move:tmp.
         move=> [-> [-> [-> ->]]].
         eexists; split; last reflexivity.
         eexists; split; last reflexivity.
@@ -961,9 +1010,11 @@ Proof.
         }
         done.
 Qed.
-Lemma run_Sbc s1 s2 mode (mode' : mem_mode) len :
+
+Lemma run_Sbc s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    SBC_mode s1 s2 mode len ->
+    spec.SBC_mode s1 s2 mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical RegA (Binop Sbc mode') true) s1.
 Proof.
@@ -972,7 +1023,10 @@ Proof.
     have [d d_def]: exists d, d = Flag s1 D by exists (Flag s1 D).
     rewrite /SBC_mode -d_def; case: d d_def => d_def.
     - destruct s2; simpl.
-        move=> [addr' [w_in [w_out [c_out [v [/mode_spec m [fetch_w_in [is_dec_Adc [-> [-> [-> ->]]]]]]]]]]].
+        move=>
+            [addr' [w_in [w_out [c_out
+                [v [/mode_spec m [fetch_w_in [is_dec_Adc
+                    [-> [-> [-> ->]]]]]]]]]]].
         eexists; split; last reflexivity.
         eexists; split; last reflexivity.
         eexists (_,_,_); split.
@@ -986,7 +1040,7 @@ Proof.
         }
         done.
     - destruct s2; simpl.
-        move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move: tmp.
+        move=> [addr' [w_in [/mode_spec m [fetch_w_in tmp]]]]; move:tmp.
         move=> [-> [-> [-> ->]]].
         eexists; split; last reflexivity.
         eexists; split; last reflexivity.
@@ -1000,9 +1054,10 @@ Proof.
         done.
 Qed.
 
-Lemma run_Cmp s1 s2 r mode (mode' : mem_mode) len :
+Lemma run_Cmp s1 s2 r
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    CMP_mode s1 s2 r mode len ->
+    spec.CMP_mode s1 s2 r mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical (RegMode r) (Binop Cmp mode') true) s1.
 Proof.
@@ -1024,21 +1079,25 @@ Proof.
     by apply functional_extensionality; case.
 Qed.
 
-
-Lemma run_Shift (right roll : bool) s1 s2 mode (mode' : mem_mode) len :
+Lemma run_Shift (right roll : bool) s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    @shift_instr_mode s1 s2
+    spec.shift_instr_mode s1 s2
         (if right
         then (if roll then ROR_spec else LSR_spec)
         else (if roll then ROL_spec else ASL_spec))
     mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
-    s2 ∈ run_instr (Typical mode' ((if right then ShiftR else ShiftL) roll) true) s1.
+    s2 ∈ run_instr
+        (Typical mode' ((if right then ShiftR else ShiftL) roll) true)
+        s1.
 Proof.
     move=> -> H mode_spec; move: H.
     rewrite /shift_instr_mode.
     destruct s2; simpl.
-    move=> [addr' [w_in [c_out [w_out [/mode_spec m [fetch_w_in [is_shift [-> [-> [-> ->]]]]]]]]]].
+    move=>
+        [addr' [w_in [c_out [w_out [/mode_spec m [fetch_w_in [is_shift
+            [-> [-> [-> ->]]]]]]]]]].
     eexists; split; last exact m.
     eexists; split; last exact fetch_w_in.
     eexists (_,_,_); split.
@@ -1053,12 +1112,15 @@ Proof.
     - by apply functional_extensionality; case.
     - by case mode'; case right.
 Qed.
+
 Lemma run_Shift_A (right roll : bool) s1 s2 :
-    @shift_instr_A s1 s2
+    spec.shift_instr_A s1 s2
         (if right
         then (if roll then ROR_spec else LSR_spec)
         else (if roll then ROL_spec else ASL_spec)) ->
-    s2 ∈ run_instr (Typical RegA ((if right then ShiftR else ShiftL) roll) true) s1.
+    s2 ∈ run_instr
+        (Typical RegA ((if right then ShiftR else ShiftL) roll) true)
+        s1.
 Proof.
     rewrite /shift_instr_A.
     destruct s2; simpl.
@@ -1078,9 +1140,10 @@ Proof.
     - by case right.
 Qed.
 
-Lemma run_Inc_mode s1 s2 mode (mode' : mem_mode) len :
+Lemma run_Inc_mode s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    INC_mode s1 s2 mode len ->
+    spec.INC_mode s1 s2 mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical mode' Inc true) s1.
 Proof.
@@ -1096,8 +1159,9 @@ Proof.
     - by apply functional_extensionality; case.
     - by case mode'.
 Qed.
+
 Lemma run_Inc_reg s1 s2 r :
-    INC_reg s1 s2 r ->
+    spec.INC_reg s1 s2 r ->
     s2 ∈ run_instr (Typical (RegMode r) Inc true) s1.
 Proof.
     rewrite /INC_reg.
@@ -1111,9 +1175,10 @@ Proof.
     by apply functional_extensionality; case.
 Qed.
 
-Lemma run_Dec_mode s1 s2 mode (mode' : mem_mode) len :
+Lemma run_Dec_mode s1 s2
+    (mode : spec.mem_addressing_mode) (mode' : mem_mode) len :
     len = Z.of_nat (S (mode_len mode')) ->
-    DEC_mode s1 s2 mode len ->
+    spec.DEC_mode s1 s2 mode len ->
     (forall addr, mode s1 addr -> MemLoc addr ∈ mode_loc s1 mode') ->
     s2 ∈ run_instr (Typical mode' Dec true) s1.
 Proof.
@@ -1129,8 +1194,9 @@ Proof.
     - by apply functional_extensionality; case.
     - by case mode'.
 Qed.
+
 Lemma run_Dec_reg s1 s2 r :
-    DEC_reg s1 s2 r ->
+    spec.DEC_reg s1 s2 r ->
     s2 ∈ run_instr (Typical (RegMode r) Dec true) s1.
 Proof.
     rewrite /DEC_reg.
@@ -1144,9 +1210,8 @@ Proof.
     by apply functional_extensionality; case.
 Qed.
 
-
 Lemma run_Branch s1 s2 f (val : bool) :
-    branch_instr s1 s2
+    spec.branch_instr s1 s2
         (if val
         then (fun s => Flag s f)
         else (fun s => negb (Flag s f))) ->
@@ -1165,136 +1230,203 @@ Proof.
         by case val; case: (spec.Flag s1 f).
 Qed.
 
+(*|
+
+------------
+Main Theorem
+------------
+
+With all that done, we prove the main theorem.
+
+This is basically a 256-way case split.
+* For invalid instructions, there's nothing to do.
+* For most valid instructions, we simply apply a few of the above lemmas.
+* For the last few instructions, we just prove it manually.
+
+
+A note about the case split
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+I don't know of a nice way to case-split on a ``bv 8``.
+However, the Coq standard library provides a ``byte`` type,
+which is defined by listing out the 256 possible values.
+This makes case-splitting trivial.
+
+In ``utils.v``, I prove the equivalence of ``bv 8`` and ``byte``.
+So I use that here, as a method of case-splitting over a ``bv 8``.
+
+|*)
+
 From theories Require Import utils.
 
-Theorem run_instr_spec opcode :
-    match parse_instr opcode with
-    | None => True
-    | Some i => forall s1 s2,
-        instruction s1 s2 opcode -> s2 ∈ run_instr i s1
-    end.
+Theorem run_instr_spec : run_instr_claim.
 Proof.
+    move=> opcode.
     rewrite -(bv_of_byte_of_bv opcode) bv_of_byte_speedup.
-    case (byte_of_bv opcode); set tmp := (parse_instr _); simpl in tmp; rewrite /tmp.
+    case (byte_of_bv opcode);
+        set tmp := (parse_instr _);
+        simpl in tmp;
+        rewrite /tmp.
 
     (* 0 *)
     - trivial.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_zero_page | apply zero_page_mode].
-    - by intros; eapply (run_Shift false false); [reflexivity | eapply ASL_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_zero_page | apply zero_page_mode].
+    - by intros; eapply (run_Shift false false);
+        [reflexivity | eapply ASL_zero_page | apply zero_page_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_immediate | apply immediate_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_immediate | apply immediate_mode].
     - by intros; eapply (run_Shift_A false false); eapply ASL_A.
     - trivial.
     - trivial.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_absolute | apply absolute_mode].
-    - by intros; eapply (run_Shift false false); [reflexivity | eapply ASL_absolute | apply absolute_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_absolute | apply absolute_mode].
+    - by intros; eapply (run_Shift false false);
+        [reflexivity | eapply ASL_absolute | apply absolute_mode].
     - trivial.
 
     (* 1 *)
     - by intros; eapply run_Branch; eapply BPL.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply (run_Shift false false); [reflexivity | eapply ASL_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply (run_Shift false false);
+        [reflexivity | eapply ASL_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply CLC.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Or; [reflexivity | eapply ORA_absolute_x | apply absolute_x_mode].
-    - by intros; eapply (run_Shift false false); [reflexivity | eapply ASL_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Or;
+        [reflexivity | eapply ORA_absolute_x | apply absolute_x_mode].
+    - by intros; eapply (run_Shift false false);
+        [reflexivity | eapply ASL_absolute_x | apply absolute_x_mode].
     - trivial.
 
     (* 2 *)
-    - move=> s1 [? ? ? ?] /JSR H; specialize (H eq_refl); simpl in H; move: H => [pc [/absolute_mode [? [eq m]] [-> [-> [-> ->]]]]].
+    - move=> s1 [? ? ? ?] /JSR H; specialize (H eq_refl); simpl in H.
+        move: H => [pc [/absolute_mode [? [eq m]] [-> [-> [-> ->]]]]].
         eexists; split; last exact m.
         set_unfold.
         f_equal.
         + by apply functional_extensionality; case.
         + by inversion eq.
-    - by intros; eapply run_And; [reflexivity | eapply AND_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Bit; [reflexivity | eapply BIT_zero_page | apply zero_page_mode].
-    - by intros; eapply run_And; [reflexivity | eapply AND_zero_page | apply zero_page_mode].
-    - by intros; eapply (run_Shift false true); [reflexivity | eapply ROL_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Bit;
+        [reflexivity | eapply BIT_zero_page | apply zero_page_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_zero_page | apply zero_page_mode].
+    - by intros; eapply (run_Shift false true);
+        [reflexivity | eapply ROL_zero_page | apply zero_page_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_And; [reflexivity | eapply AND_immediate | apply immediate_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_immediate | apply immediate_mode].
     - by intros; eapply (run_Shift_A false true); eapply ROL_A.
     - trivial.
-    - by intros; eapply run_Bit; [reflexivity | eapply BIT_absolute | apply absolute_mode].
-    - by intros; eapply run_And; [reflexivity | eapply AND_absolute | apply absolute_mode].
-    - by intros; eapply (run_Shift false true); [reflexivity | eapply ROL_absolute | apply absolute_mode].
+    - by intros; eapply run_Bit;
+        [reflexivity | eapply BIT_absolute | apply absolute_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_absolute | apply absolute_mode].
+    - by intros; eapply (run_Shift false true);
+        [reflexivity | eapply ROL_absolute | apply absolute_mode].
     - trivial.
 
     (* 3 *)
     - by intros; eapply run_Branch; eapply BMI.
-    - by intros; eapply run_And; [reflexivity | eapply AND_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_And; [reflexivity | eapply AND_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply (run_Shift false true); [reflexivity | eapply ROL_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply (run_Shift false true);
+        [reflexivity | eapply ROL_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply SEC.
-    - by intros; eapply run_And; [reflexivity | eapply AND_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_And; [reflexivity | eapply AND_absolute_x | apply absolute_x_mode].
-    - by intros; eapply (run_Shift false true); [reflexivity | eapply ROL_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_And;
+        [reflexivity | eapply AND_absolute_x | apply absolute_x_mode].
+    - by intros; eapply (run_Shift false true);
+        [reflexivity | eapply ROL_absolute_x | apply absolute_x_mode].
     - trivial.
 
     (* 4 *)
     - trivial.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_zero_page | apply zero_page_mode].
-    - by intros; eapply (run_Shift true false); [reflexivity | eapply LSR_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_zero_page | apply zero_page_mode].
+    - by intros; eapply (run_Shift true false);
+        [reflexivity | eapply LSR_zero_page | apply zero_page_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_immediate | apply immediate_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_immediate | apply immediate_mode].
     - by intros; eapply (run_Shift_A true false); eapply LSR_A.
     - trivial.
-    - move=> s1 [? ? ? ?] /JMP H; specialize (H eq_refl); simpl in H; move: H => [pc [/absolute_mode [? [eq m]] [-> [-> [-> ->]]]]].
+    - move=> s1 [? ? ? ?] /JMP H; specialize (H eq_refl); simpl in H.
+        move: H => [pc [/absolute_mode [? [eq m]] [-> [-> [-> ->]]]]].
         eexists; split; last exact m.
         inversion eq.
         reflexivity.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_absolute | apply absolute_mode].
-    - by intros; eapply (run_Shift true false); [reflexivity | eapply LSR_absolute | apply absolute_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_absolute | apply absolute_mode].
+    - by intros; eapply (run_Shift true false);
+        [reflexivity | eapply LSR_absolute | apply absolute_mode].
     - trivial.
 
     (* 5 *)
     - by intros; eapply run_Branch; eapply BVC.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply (run_Shift true false); [reflexivity | eapply LSR_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply (run_Shift true false);
+        [reflexivity | eapply LSR_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply CLI.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Xor; [reflexivity | eapply EOR_absolute_x | apply absolute_x_mode].
-    - by intros; eapply (run_Shift true false); [reflexivity | eapply LSR_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Xor;
+        [reflexivity | eapply EOR_absolute_x | apply absolute_x_mode].
+    - by intros; eapply (run_Shift true false);
+        [reflexivity | eapply LSR_absolute_x | apply absolute_x_mode].
     - trivial.
 
     (* 6 *)
-    - move=> s1 [? ? ? ?] /RTS H; specialize (H eq_refl); simpl in H; move: H => [w1 [w2 [fetch_w1 [fetch_w2 [-> [-> [-> ->]]]]]]].
+    - move=> s1 [? ? ? ?] /RTS H; specialize (H eq_refl); simpl in H.
+        move: H => [w1 [w2 [fetch_w1 [fetch_w2 [-> [-> [-> ->]]]]]]].
         eexists; split.
         2: {
             eexists; split; last exact fetch_w1.
@@ -1304,70 +1436,95 @@ Proof.
         set_unfold.
         f_equal.
         by apply functional_extensionality; case.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_zero_page | apply zero_page_mode].
-    - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_zero_page | apply zero_page_mode].
+    - by intros; eapply (run_Shift true true);
+        [reflexivity | eapply ROR_zero_page | apply zero_page_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_immediate | apply immediate_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_immediate | apply immediate_mode].
     - by intros; eapply (run_Shift_A true true); eapply ROR_A.
     - trivial.
     - trivial.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_absolute | apply absolute_mode].
-    - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_absolute | apply absolute_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_absolute | apply absolute_mode].
+    - by intros; eapply (run_Shift true true);
+        [reflexivity | eapply ROR_absolute | apply absolute_mode].
     - trivial.
 
     (* 7 *)
     - by intros; eapply run_Branch; eapply BVS.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply (run_Shift true true);
+        [reflexivity | eapply ROR_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply SEI.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Adc; [reflexivity | eapply ADC_absolute_x | apply absolute_x_mode].
-    - by intros; eapply (run_Shift true true); [reflexivity | eapply ROR_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Adc;
+        [reflexivity | eapply ADC_absolute_x | apply absolute_x_mode].
+    - by intros; eapply (run_Shift true true);
+        [reflexivity | eapply ROR_absolute_x | apply absolute_x_mode].
     - trivial.
 
     (* 8 *)
     - trivial.
-    - by intros; eapply run_store; [reflexivity | eapply STA_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_store; [reflexivity | eapply STY_zero_page | apply zero_page_mode].
-    - by intros; eapply run_store; [reflexivity | eapply STA_zero_page | apply zero_page_mode].
-    - by intros; eapply run_store; [reflexivity | eapply STX_zero_page | apply zero_page_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STY_zero_page | apply zero_page_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_zero_page | apply zero_page_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STX_zero_page | apply zero_page_mode].
     - trivial.
     - by intros; eapply run_Dec_reg; eapply DEY.
     - trivial.
     - by intros; eapply run_transfer; eapply TXA.
     - trivial.
-    - by intros; eapply run_store; [reflexivity | eapply STY_absolute | apply absolute_mode].
-    - by intros; eapply run_store; [reflexivity | eapply STA_absolute | apply absolute_mode].
-    - by intros; eapply run_store; [reflexivity | eapply STX_absolute | apply absolute_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STY_absolute | apply absolute_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_absolute | apply absolute_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STX_absolute | apply absolute_mode].
     - trivial.
 
     (* 9 *)
     - by intros; eapply run_Branch; eapply BCC.
-    - by intros; eapply run_store; [reflexivity | eapply STA_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_store; [reflexivity | eapply STY_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply run_store; [reflexivity | eapply STA_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply run_store; [reflexivity | eapply STX_zero_page_y | apply zero_page_y_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STY_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STX_zero_page_y | apply zero_page_y_mode].
     - trivial.
     - by intros; eapply run_transfer; eapply TYA.
-    - by intros; eapply run_store; [reflexivity | eapply STA_absolute_y | apply absolute_y_mode].
-    - move=> s1 [? ? ? ?] /TXS H; specialize (H eq_refl); simpl in H; move: H => [-> [-> [-> ->]]].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_absolute_y | apply absolute_y_mode].
+    - move=> s1 [? ? ? ?] /TXS H; specialize (H eq_refl); simpl in H.
+        move: H => [-> [-> [-> ->]]].
         eexists; split; last reflexivity.
         eexists; split; last reflexivity.
         eexists (_,_,_); split.
@@ -1381,126 +1538,191 @@ Proof.
         by apply functional_extensionality; case.
     - trivial.
     - trivial.
-    - by intros; eapply run_store; [reflexivity | eapply STA_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_store;
+        [reflexivity | eapply STA_absolute_x | apply absolute_x_mode].
     - trivial.
     - trivial.
 
     (* A *)
-    - by intros; eapply run_load; [reflexivity | eapply LDY_immediate | apply immediate_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDA_indirect_x | apply indirect_x_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDX_immediate | apply immediate_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDY_immediate | apply immediate_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDX_immediate | apply immediate_mode].
     - trivial.
-    - by intros; eapply run_load; [reflexivity | eapply LDY_zero_page | apply zero_page_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDA_zero_page | apply zero_page_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDX_zero_page | apply zero_page_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDY_zero_page | apply zero_page_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_zero_page | apply zero_page_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDX_zero_page | apply zero_page_mode].
     - trivial.
     - by intros; eapply run_transfer; eapply TAY.
-    - by intros; eapply run_load; [reflexivity | eapply LDA_immediate | apply immediate_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_immediate | apply immediate_mode].
     - by intros; eapply run_transfer; eapply TAX.
     - trivial.
-    - by intros; eapply run_load; [reflexivity | eapply LDY_absolute | apply absolute_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDA_absolute | apply absolute_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDX_absolute | apply absolute_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDY_absolute | apply absolute_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_absolute | apply absolute_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDX_absolute | apply absolute_mode].
     - trivial.
 
     (* B *)
     - by intros; eapply run_Branch; eapply BCS.
-    - by intros; eapply run_load; [reflexivity | eapply LDA_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_load; [reflexivity | eapply LDY_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDA_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDX_zero_page_y | apply zero_page_y_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDY_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDX_zero_page_y | apply zero_page_y_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply CLV.
-    - by intros; eapply run_load; [reflexivity | eapply LDA_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_absolute_y | apply absolute_y_mode].
     - by intros; eapply run_transfer; eapply TSX.
     - trivial.
-    - by intros; eapply run_load; [reflexivity | eapply LDY_absolute_x | apply absolute_x_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDA_absolute_x | apply absolute_x_mode].
-    - by intros; eapply run_load; [reflexivity | eapply LDX_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDY_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDA_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_load;
+        [reflexivity | eapply LDX_absolute_y | apply absolute_y_mode].
     - trivial.
 
     (* C *)
-    - by intros; eapply run_Cmp; [reflexivity | eapply CPY_immediate | apply immediate_mode].
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CPY_immediate | apply immediate_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CPY_zero_page | apply zero_page_mode].
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_zero_page | apply zero_page_mode].
-    - by intros; eapply run_Dec_mode; [reflexivity | eapply DEC_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CPY_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Dec_mode;
+        [reflexivity | eapply DEC_zero_page | apply zero_page_mode].
     - trivial.
     - by intros; eapply run_Inc_reg; eapply INY.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_immediate | apply immediate_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_immediate | apply immediate_mode].
     - by intros; eapply run_Dec_reg; eapply DEX.
     - trivial.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CPY_absolute | apply absolute_mode].
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_absolute | apply absolute_mode].
-    - by intros; eapply run_Dec_mode; [reflexivity | eapply DEC_absolute | apply absolute_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CPY_absolute | apply absolute_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_absolute | apply absolute_mode].
+    - by intros; eapply run_Dec_mode;
+        [reflexivity | eapply DEC_absolute | apply absolute_mode].
     - trivial.
 
     (* D *)
     - by intros; eapply run_Branch; eapply BNE.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply run_Dec_mode; [reflexivity | eapply DEC_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Dec_mode;
+        [reflexivity | eapply DEC_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply CLD.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CMP_absolute_x | apply absolute_x_mode].
-    - by intros; eapply run_Dec_mode; [reflexivity | eapply DEC_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CMP_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Dec_mode;
+        [reflexivity | eapply DEC_absolute_x | apply absolute_x_mode].
     - trivial.
 
     (* E *)
-    - by intros; eapply run_Cmp; [reflexivity | eapply CPX_immediate | apply immediate_mode].
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_indirect_x | apply indirect_x_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CPX_immediate | apply immediate_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_indirect_x | apply indirect_x_mode].
     - trivial.
     - trivial.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CPX_zero_page | apply zero_page_mode].
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_zero_page | apply zero_page_mode].
-    - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CPX_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_zero_page | apply zero_page_mode].
+    - by intros; eapply run_Inc_mode;
+        [reflexivity | eapply INC_zero_page | apply zero_page_mode].
     - trivial.
     - by intros; eapply run_Inc_reg; eapply INX.
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_immediate | apply immediate_mode].
-    - by move=> s1 [? ? ? ?] /NOP => H; specialize (H eq_refl); simpl in H; move: H => [-> [-> [-> ->]]].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_immediate | apply immediate_mode].
+    - move=> s1 [? ? ? ?] /NOP => H; specialize (H eq_refl); simpl in H.
+        by move: H => [-> [-> [-> ->]]].
     - trivial.
-    - by intros; eapply run_Cmp; [reflexivity | eapply CPX_absolute | apply absolute_mode].
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_absolute | apply absolute_mode].
-    - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_absolute | apply absolute_mode].
+    - by intros; eapply run_Cmp;
+        [reflexivity | eapply CPX_absolute | apply absolute_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_absolute | apply absolute_mode].
+    - by intros; eapply run_Inc_mode;
+        [reflexivity | eapply INC_absolute | apply absolute_mode].
     - trivial.
 
     (* F *)
     - by intros; eapply run_Branch; eapply BEQ.
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_indirect_y | apply indirect_y_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_indirect_y | apply indirect_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_zero_page_x | apply zero_page_x_mode].
-    - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_zero_page_x | apply zero_page_x_mode].
+    - by intros; eapply run_Inc_mode;
+        [reflexivity | eapply INC_zero_page_x | apply zero_page_x_mode].
     - trivial.
     - by intros; eapply run_SetFlag; eapply SED.
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_absolute_y | apply absolute_y_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_absolute_y | apply absolute_y_mode].
     - trivial.
     - trivial.
     - trivial.
-    - by intros; eapply run_Sbc; [reflexivity | eapply SBC_absolute_x | apply absolute_x_mode].
-    - by intros; eapply run_Inc_mode; [reflexivity | eapply INC_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Sbc;
+        [reflexivity | eapply SBC_absolute_x | apply absolute_x_mode].
+    - by intros; eapply run_Inc_mode;
+        [reflexivity | eapply INC_absolute_x | apply absolute_x_mode].
     - trivial.
 Qed.
 
-(* Thus the machine language has been upgraded to an assembly language.
-The benefits are as follows:
-- No longer do I have to deal with a hundred plus opcodes.
-    The assembly instruction set, while not trivial, is a lot smaller.
-- Control flow is decoupled from program behavior;
-    it is trivial to extract the next PC value from `run_instr`.
-- A structured language, even an assebly language,
-    is the first step on the path to higher abstraction.
-    And higher abstraction, done right, leads to a simpler description of the game.
-*)
+(*|
+
+==========
+Conclusion
+==========
+
+This concludes the proof. So what does this gain us?
+
+To recap:
+
+* ``spec.v`` defines the behavior of the Atari.
+  However, it does so by individually stating the behavior of each valid opcode.
+  This is clunky and hard to work with.
+
+* This file, on the other hand, gives a higher level explanation of that same behavior.
+  It explains which opcodes correspond to valid instructions, then explains the meaning of those instructions in a more modular way.
+  This should be significantly easier to work with than the original spec.
+
+  In particular, it is no longer necessary to poke through the details
+  of an instruction's execution to figure out where the next instruction is!
+
+* We end by proving that the higher level description faithfully models the low-level spec.
+  This means all future proofs can be written at this higher level.
+
+|*)
