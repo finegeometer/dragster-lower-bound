@@ -4,5 +4,5 @@ theories/utils.v
 theories/rom.v
 theories/spec.v
 theories/instruction.v
-theories/lang.v
+theories/iris.v
 theories/main.v
