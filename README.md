@@ -1,3 +1,7 @@
+An attempt to formalize the theorem that the game Dragster cannot be completed in less than 5.57 seconds.
+
+The proof is currently incomplete.
+
 # Prettified Documented Source Code
 
 - https://finegeometer.github.io/dragster-lower-bound/utils.html
